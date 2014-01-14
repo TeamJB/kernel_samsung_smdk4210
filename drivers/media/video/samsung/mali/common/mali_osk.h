@@ -368,6 +368,7 @@ typedef struct _mali_osk_notification_queue_t_struct _mali_osk_notification_queu
 /** @brief Public notification data object type */
 typedef struct _mali_osk_notification_t_struct
 {
+	u32 magic_code;
 	u32 notification_type;   /**< The notification type */
 	u32 result_buffer_size; /**< Size of the result buffer to copy to user space */
 	void * result_buffer;   /**< Buffer containing any type specific data */
@@ -1683,6 +1684,11 @@ u32 _mali_osk_get_pid(void);
  * @return Identificator for calling thread.
  */
 u32 _mali_osk_get_tid(void);
+
+void _mali_osk_profiling_add_event(u32 event_id, u32 data0);
+void _mali_osk_profiling_add_counter(u32 event_id, u32 data0);
+int _mali_osk_counter_event(u32 counter, u32 event);
+extern u32 counter_table[];
 
 /** @} */ /* end group  _mali_osk_miscellaneous */
 

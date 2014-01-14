@@ -13,7 +13,8 @@
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/videodev2.h>
-#include <linux/videodev2_samsung.h>
+#include <linux/videodev2_exynos_media.h>
+#include <linux/videodev2_exynos_camera.h>
 #include <linux/io.h>
 #include <mach/map.h>
 #include <plat/regs-fimc.h>
@@ -257,6 +258,9 @@ static void fimc_reset_cfg(struct fimc_control *ctrl)
 {
 	int i;
 	u32 cfg[][2] = {
+#ifdef CONFIG_SLP
+		{ 0x008, 0x20010480 },
+#endif
 		{ 0x018, 0x00000000 }, { 0x01c, 0x00000000 },
 		{ 0x020, 0x00000000 }, { 0x024, 0x00000000 },
 		{ 0x028, 0x00000000 }, { 0x02c, 0x00000000 },
@@ -370,6 +374,8 @@ int fimc_hwget_overflow_state(struct fimc_control *ctrl)
 	flag = S3C_CISTATUS_OVFIY | S3C_CISTATUS_OVFICB | S3C_CISTATUS_OVFICR;
 
 	if (status & flag) {
+		printk(KERN_INFO "FIMC%d overflow has occured status 0x%x\n",
+				ctrl->id, status);
 		cfg = readl(ctrl->regs + S3C_CIWDOFST);
 		cfg |= (S3C_CIWDOFST_CLROVFIY | S3C_CIWDOFST_CLROVFICB |
 			S3C_CIWDOFST_CLROVFICR);
@@ -689,6 +695,7 @@ int fimc_hwset_output_colorspace(struct fimc_control *ctrl, u32 pixelformat)
 	case V4L2_PIX_FMT_YUV420:	/* fall through */
 	case V4L2_PIX_FMT_YVU420:	/* fall through */
 	case V4L2_PIX_FMT_NV12:		/* fall through */
+	case V4L2_PIX_FMT_NV12M:	/* fall through */
 	case V4L2_PIX_FMT_NV12T:	/* fall through */
 	case V4L2_PIX_FMT_NV21:
 		cfg |= S3C_CITRGFMT_OUTFORMAT_YCBCR420;
@@ -844,6 +851,7 @@ int fimc_hwset_output_yuv(struct fimc_control *ctrl, u32 pixelformat)
 
 	/* 2 plane formats */
 	case V4L2_PIX_FMT_NV12:		/* fall through */
+	case V4L2_PIX_FMT_NV12M:	/* fall through */
 	case V4L2_PIX_FMT_NV12T:	/* fall through */
 	case V4L2_PIX_FMT_NV16:
 		cfg |= S3C_CIOCTRL_ORDER2P_LSB_CBCR;
@@ -1267,7 +1275,7 @@ void fimc_wait_disable_capture(struct fimc_control *ctrl)
 			break;
 		msleep(5);
 	}
-	fimc_info2("IMGCPTEN: Wait time = %d ms\n"	\
+	fimc_err("IMGCPTEN: Wait time = %d ms\n"	\
 		, jiffies_to_msecs(jiffies - timeo + 20));
 	return;
 }
@@ -1632,6 +1640,7 @@ int fimc50_hwset_output_offset(struct fimc_control *ctrl, u32 pixelformat,
 
 	/* 2 planes, 12 bits per pixel */
 	case V4L2_PIX_FMT_NV12:		/* fall through */
+	case V4L2_PIX_FMT_NV12M:	/* fall through */
 	case V4L2_PIX_FMT_NV12T:	/* fall through */
 	case V4L2_PIX_FMT_NV21:
 		cfg_y |= S3C_CIOYOFF_HORIZONTAL(crop->left);

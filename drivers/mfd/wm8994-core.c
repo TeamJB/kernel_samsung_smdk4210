@@ -584,14 +584,17 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		goto err_enable;
 	}
 
+	wm8994->revision = ret & WM8994_CHIP_REV_MASK;
+	wm8994->cust_id = (ret & WM8994_CUST_ID_MASK) >> WM8994_CUST_ID_SHIFT;
+
 	switch (wm8994->type) {
 	case WM8994:
-		switch (ret) {
+		switch (wm8994->revision) {
 		case 0:
 		case 1:
 			dev_warn(wm8994->dev,
 				 "revision %c not fully supported\n",
-				 'A' + ret);
+				 'A' + wm8994->revision);
 			break;
 		default:
 			break;
@@ -601,7 +604,8 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		break;
 	}
 
-	dev_info(wm8994->dev, "%s revision %c\n", devname, 'A' + ret);
+	dev_info(wm8994->dev, "%s revision %c CUST_ID %02x\n", devname,
+		 'A' + wm8994->revision, wm8994->cust_id);
 
 	if (pdata) {
 		wm8994->irq_base = pdata->irq_base;
@@ -671,7 +675,6 @@ err_supplies:
 	kfree(wm8994->supplies);
 err:
 	mfd_remove_devices(wm8994->dev);
-	kfree(wm8994);
 	return ret;
 }
 
@@ -695,10 +698,16 @@ static int wm8994_i2c_read_device(struct wm8994 *wm8994, unsigned short reg,
 	u16 r = cpu_to_be16(reg);
 
 	ret = i2c_master_send(i2c, (unsigned char *)&r, 2);
-	if (ret < 0)
+	if (ret < 0) {
+		printk(KERN_DEBUG"[%s] i2c read fail reg[%x], ret[%d]\n",
+				__func__, reg, ret);
 		return ret;
-	if (ret != 2)
+	}
+	if (ret != 2) {
+		printk(KERN_DEBUG"[%s] read fail reg[%x], ret EIO\n",
+				__func__, reg);
 		return -EIO;
+		}
 
 	ret = i2c_master_recv(i2c, dest, bytes);
 	if (ret < 0)
@@ -708,12 +717,23 @@ static int wm8994_i2c_read_device(struct wm8994 *wm8994, unsigned short reg,
 	return 0;
 }
 
-static int wm8994_i2c_write_device(struct wm8994 *wm8994, unsigned short reg,
+static int wm8994_i2c_gather_write_device(struct wm8994 *wm8994, unsigned short reg,
 				   int bytes, const void *src)
 {
 	struct i2c_client *i2c = wm8994->control_data;
 	struct i2c_msg xfer[2];
 	int ret;
+
+	if (!i2c_check_functionality(i2c->adapter, I2C_FUNC_PROTOCOL_MANGLING)) {
+		dev_vdbg(wm8994->dev,
+				"%s: I2C Controller does _NOT_ support block/gather\n",
+				__func__);
+		return -ENOTSUPP;
+	}
+
+	dev_vdbg(wm8994->dev,
+		 "%s:  gather write - Reg = 0x%04x, bytes = 0x%x\n",
+		 __func__, reg, bytes);
 
 	reg = cpu_to_be16(reg);
 
@@ -728,12 +748,83 @@ static int wm8994_i2c_write_device(struct wm8994 *wm8994, unsigned short reg,
 	xfer[1].buf = (char *)src;
 
 	ret = i2c_transfer(i2c->adapter, xfer, 2);
-	if (ret < 0)
+	if (ret < 0) {
+		printk(KERN_DEBUG"[%s] write fail reg[%x], ret[%d]\n",
+				__func__, reg, ret);
 		return ret;
-	if (ret != 2)
+		}
+	if (ret != 2) {
+		printk(KERN_DEBUG"[%s] write fail reg[%x], ret EIO\n",
+				__func__, reg);
 		return -EIO;
+		}
 
 	return 0;
+}
+
+static int wm8994_i2c_write_device(struct wm8994 *wm8994, unsigned short reg,
+				   int bytes, const void *src)
+{
+	struct i2c_client *i2c = wm8994->control_data;
+	int ret;
+
+	unsigned char msg[2 + 2];
+	void *buf;
+
+	/* If we're doing a single register write we can probably just
+	 * send the work_buf directly, otherwise try to do a gather
+	 * write.
+	 */
+	if (bytes == 2) {
+		dev_vdbg(wm8994->dev,
+			 "%s: Single register write - Reg = 0x%04x, bytes = 0x%x\n",
+			 __func__, reg, bytes);
+
+		reg = cpu_to_be16(reg);
+		memcpy(&msg[0], &reg, 2);
+		memcpy(&msg[2], src, bytes);
+
+		ret = i2c_master_send(i2c, msg, bytes + 2);
+		if (ret < 0) {
+			printk(KERN_DEBUG"[%s] write fail reg[%x], ret[%d]\n",
+					__func__, reg, ret);
+			return ret;
+			}
+		if (ret < bytes + 2) {
+			printk(KERN_DEBUG"[%s] write fail reg[%x], ret EIO\n",
+					__func__, reg);
+			return -EIO;
+			}
+		return 0;
+	} else {
+		ret = wm8994_i2c_gather_write_device(wm8994, reg, bytes, src);
+	}
+
+	if (ret == -ENOTSUPP) {
+		dev_vdbg(wm8994->dev,
+			 "%s: Manual group write - Reg = 0x%04x, bytes = 0x%x\n",
+			 __func__, reg, bytes);
+
+		buf = kmalloc(2 + bytes, GFP_KERNEL);
+		if (!buf)
+			return -ENOMEM;
+
+		reg = cpu_to_be16(reg);
+		memcpy(buf, &reg, 2);
+		memcpy(buf + 2, src, bytes);
+
+		ret = i2c_master_send(i2c, buf, bytes + 2);
+
+		kfree(buf);
+
+		if (ret < 0)
+			return ret;
+		if (ret < bytes + 2)
+			return -EIO;
+
+		return 0;
+	}
+	return ret;
 }
 
 static int wm8994_i2c_probe(struct i2c_client *i2c,
@@ -760,6 +851,34 @@ static int wm8994_i2c_probe(struct i2c_client *i2c,
 
 	return 0;
 }
+
+#if defined(CONFIG_MACH_BAFFIN)
+static void wm8994_i2c_shutdown(struct i2c_client *i2c)
+{
+	struct wm8994 *wm8994 = i2c_get_clientdata(i2c);
+	int ret;
+
+	dev_vdbg(wm8994->dev, "%s: ++\n", __func__);
+
+    /* Explicitly put the device into reset in case regulators
+     * don't get disabled in order to ensure consistent restart.
+     */
+	wm8994_reg_write(wm8994, WM8994_SOFTWARE_RESET, 0x0000);
+
+	wm8994->suspended = true;
+
+	ret = regulator_bulk_disable(wm8994->num_supplies,
+			       wm8994->supplies);
+	if (ret != 0) {
+		dev_err(wm8994->dev, "Failed to disable supplies: %d\n", ret);
+		return;
+	}
+
+	dev_info(wm8994->dev, "%s: --\n", __func__);
+
+	return;
+}
+#endif
 
 static int wm8994_i2c_remove(struct i2c_client *i2c)
 {
@@ -789,6 +908,9 @@ static struct i2c_driver wm8994_i2c_driver = {
 	},
 	.probe = wm8994_i2c_probe,
 	.remove = wm8994_i2c_remove,
+#if defined(CONFIG_MACH_BAFFIN)
+	.shutdown = wm8994_i2c_shutdown,
+#endif
 	.id_table = wm8994_i2c_id,
 };
 

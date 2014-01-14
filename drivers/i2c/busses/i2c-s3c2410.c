@@ -88,7 +88,7 @@ struct s3c24xx_i2c {
 
 static inline void dump_i2c_register(struct s3c24xx_i2c *i2c)
 {
-	dev_warn(i2c->dev, "Register dump(%d) : %x %x %x %x %x\n"
+	dev_dbg(i2c->dev, "Register dump(%d) : %x %x %x %x %x\n"
 		, i2c->suspended
 		, readl(i2c->regs + S3C2410_IICCON)
 		, readl(i2c->regs + S3C2410_IICSTAT)
@@ -315,7 +315,7 @@ static int i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat)
 		    !(i2c->msg->flags & I2C_M_IGNORE_NAK)) {
 			/* ack was not received... */
 
-			dev_warn(i2c->dev, "ack was not received\n");
+			dev_dbg(i2c->dev, "ack was not received\n");
 			s3c24xx_i2c_stop(i2c, -ENXIO);
 			goto out_ack;
 		}
@@ -346,7 +346,7 @@ static int i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat)
 
 		if (!(i2c->msg->flags & I2C_M_IGNORE_NAK)) {
 			if (iicstat & S3C2410_IICSTAT_LASTBIT) {
-				dev_warn(i2c->dev, "WRITE: No Ack\n");
+				dev_dbg(i2c->dev, "WRITE: No Ack\n");
 
 				s3c24xx_i2c_stop(i2c, -ECONNREFUSED);
 				goto out_ack;
@@ -384,7 +384,7 @@ static int i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat)
 					 * forces us to send a new START
 					 * when we change direction */
 
-					dev_warn(i2c->dev, "Cannot do this\n");
+					dev_dbg(i2c->dev, "Cannot do this\n");
 					s3c24xx_i2c_stop(i2c, -EINVAL);
 				}
 
@@ -532,6 +532,9 @@ static int s3c24xx_i2c_doxfer(struct s3c24xx_i2c *i2c,
 	unsigned long iicstat, timeout;
 	int spins = 20;
 	int ret;
+#ifdef CONFIG_MACH_GC1
+	unsigned int cur_slave_addr;
+#endif
 
 	if (i2c->suspended)
 		return -EIO;
@@ -579,27 +582,70 @@ static int s3c24xx_i2c_doxfer(struct s3c24xx_i2c *i2c,
 	dev_dbg(i2c->dev, "waiting for bus idle\n");
 
 	/* first, try busy waiting briefly */
+#ifdef CONFIG_MACH_GC1
+	iicstat = readl(i2c->regs + S3C2410_IICSTAT);
+	cur_slave_addr = readl(i2c->regs + S3C2410_IICADD);
+	if (cur_slave_addr == 0x1F) {
+		while ((iicstat & S3C2410_IICSTAT_START) && --spins) {
+			udelay(1000);
+			iicstat = readl(i2c->regs + S3C2410_IICSTAT);
+		}
+	} else {
+		do {
+			iicstat = readl(i2c->regs + S3C2410_IICSTAT);
+		} while ((iicstat & S3C2410_IICSTAT_START) && --spins);
+	}
+#else
 	do {
 		iicstat = readl(i2c->regs + S3C2410_IICSTAT);
 	} while ((iicstat & S3C2410_IICSTAT_START) && --spins);
+#endif
+
 
 	/* if that timed out sleep */
 	if (!spins) {
-		msleep(1);
+		usleep_range(1000, 1000);
 		iicstat = readl(i2c->regs + S3C2410_IICSTAT);
 	}
 
 	/* if still not finished, clean it up */
 	spin_lock_irq(&i2c->lock);
-	if (iicstat & S3C2410_IICSTAT_START) {
-		dev_warn(i2c->dev, "timeout waiting for bus idle\n");
+
+	if (iicstat & S3C2410_IICSTAT_BUSBUSY) {
+#ifdef CONFIG_MACH_GC1
+		if (cur_slave_addr == 0x1F) {
+			dev_err(i2c->dev, "timeout waiting for bus idle\n");
+			dump_i2c_register(i2c);
+			ret =  -EINVAL;
+		} else {
+			dev_dbg(i2c->dev, "timeout waiting for bus idle\n");
+			dump_i2c_register(i2c);
+
+			if (i2c->state != STATE_STOP) {
+				dev_dbg(i2c->dev, "timeout : i2c interrupt hasn't occurred\n");
+				s3c24xx_i2c_stop(i2c, 0);
+			}
+
+			/* Disable Serial Out : \
+			   To forcely terminate the connection */
+			iicstat = readl(i2c->regs + S3C2410_IICSTAT);
+			iicstat &= ~S3C2410_IICSTAT_TXRXEN;
+			writel(iicstat, i2c->regs + S3C2410_IICSTAT);
+		}
+#else
+		dev_dbg(i2c->dev, "timeout waiting for bus idle\n");
 		dump_i2c_register(i2c);
-		s3c24xx_i2c_stop(i2c, 0);
+
+		if (i2c->state != STATE_STOP) {
+			dev_dbg(i2c->dev, "timeout : i2c interrupt hasn't occurred\n");
+			s3c24xx_i2c_stop(i2c, 0);
+		}
 
 		/* Disable Serial Out : To forcely terminate the connection */
 		iicstat = readl(i2c->regs + S3C2410_IICSTAT);
 		iicstat &= ~S3C2410_IICSTAT_TXRXEN;
 		writel(iicstat, i2c->regs + S3C2410_IICSTAT);
+#endif
 	}
 	spin_unlock_irq(&i2c->lock);
 
@@ -1066,6 +1112,11 @@ static int s3c24xx_i2c_resume_noirq(struct device *dev)
 static const struct dev_pm_ops s3c24xx_i2c_dev_pm_ops = {
 	.suspend_noirq = s3c24xx_i2c_suspend_noirq,
 	.resume_noirq = s3c24xx_i2c_resume_noirq,
+#ifdef CONFIG_HIBERNATION
+	.freeze_noirq = s3c24xx_i2c_suspend_noirq,
+	.thaw_noirq = s3c24xx_i2c_resume_noirq,
+	.restore_noirq = s3c24xx_i2c_resume_noirq,
+#endif
 };
 
 #define S3C24XX_DEV_PM_OPS (&s3c24xx_i2c_dev_pm_ops)
@@ -1104,7 +1155,11 @@ static int __init i2c_adap_s3c_init(void)
 {
 	return platform_driver_register(&s3c24xx_i2c_driver);
 }
+#ifdef CONFIG_FAST_RESUME
+beforeresume_initcall(i2c_adap_s3c_init);
+#else
 subsys_initcall(i2c_adap_s3c_init);
+#endif
 
 static void __exit i2c_adap_s3c_exit(void)
 {

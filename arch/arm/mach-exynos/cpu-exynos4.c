@@ -35,6 +35,7 @@
 #include <plat/reset.h>
 #include <plat/audio.h>
 #include <plat/tv-core.h>
+#include <plat/rtc-core.h>
 
 #include <mach/regs-irq.h>
 #include <mach/regs-pmu.h>
@@ -267,13 +268,16 @@ void __init exynos4_map_io(void)
 	s3c_fimc_setname(1, "exynos4-fimc");
 	s3c_fimc_setname(2, "exynos4-fimc");
 	s3c_fimc_setname(3, "exynos4-fimc");
+#ifdef CONFIG_S3C_DEV_RTC
+	s3c_rtc_setname("exynos-rtc");
+#endif
 #ifdef CONFIG_FB_S3C
 	s5p_fb_setname(0, "exynos4-fb");	/* FIMD0 */
 #endif
 	if (soc_is_exynos4210())
-		s3c_adc_setname("s5pv210-adc");
+		s3c_adc_setname("samsung-adc-v3");
 	else
-		s3c_adc_setname("exynos4412-adc");
+		s3c_adc_setname("samsung-adc-v4");
 
 	s5p_hdmi_setname("exynos4-hdmi");
 
@@ -283,7 +287,7 @@ void __init exynos4_map_io(void)
 	s3c_i2c2_setname("s3c2440-i2c");
 
 #ifdef CONFIG_S5P_DEV_ACE
-	s5p_ace_setname("exynos4-ace");
+	s5p_ace_setname("exynos-ace");
 #endif
 }
 
@@ -356,10 +360,12 @@ core_initcall(exynos4_core_init);
 
 #ifdef CONFIG_CACHE_L2X0
 #ifdef CONFIG_ARM_TRUSTZONE
+#if defined(CONFIG_PL310_ERRATA_588369) || defined(CONFIG_PL310_ERRATA_727915)
 static void exynos4_l2x0_set_debug(unsigned long val)
 {
 	exynos_smc(SMC_CMD_L2X0DEBUG, val, 0, 0);
 }
+#endif
 #endif
 
 static int __init exynos4_l2x0_cache_init(void)
@@ -390,7 +396,9 @@ static int __init exynos4_l2x0_cache_init(void)
 	l2x0_init(S5P_VA_L2CC, aux_val, aux_mask);
 
 #ifdef CONFIG_ARM_TRUSTZONE
+#if defined(CONFIG_PL310_ERRATA_588369) || defined(CONFIG_PL310_ERRATA_727915)
 	outer_cache.set_debug = exynos4_l2x0_set_debug;
+#endif
 #endif
 	/* Enable the full line of zero */
 	enable_cache_foz();

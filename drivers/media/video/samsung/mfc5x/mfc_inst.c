@@ -55,7 +55,15 @@ struct mfc_inst_ctx *mfc_create_inst(void)
 #ifdef CONFIG_BUSFREQ
 	ctx->busfreq_flag = false;
 #endif
-
+#if defined(CONFIG_MACH_GC1) && defined(CONFIG_EXYNOS4_CPUFREQ)
+	ctx->cpufreq_flag = false;
+#endif
+#if defined(CONFIG_CPU_EXYNOS4210) && defined(CONFIG_EXYNOS4_CPUFREQ)
+	ctx->cpufreq_flag = false;
+#endif
+#ifdef CONFIG_BUSFREQ_OPP
+	ctx->dmcthreshold_flag = false;
+#endif
 #ifdef SYSMMU_MFC_ON
 	/*
 	ctx->pgd = __pa(current->mm->pgd);
@@ -68,7 +76,7 @@ struct mfc_inst_ctx *mfc_create_inst(void)
 	return ctx;
 }
 
-void mfc_destroy_inst(struct mfc_inst_ctx* ctx)
+void mfc_destroy_inst(struct mfc_inst_ctx *ctx)
 {
 	struct mfc_dec_ctx *dec_ctx;
 	struct mfc_enc_ctx *enc_ctx;
@@ -104,9 +112,9 @@ void mfc_destroy_inst(struct mfc_inst_ctx* ctx)
 		}
 
 		if (ctx->state >= INST_STATE_OPEN) {
-			mfc_clock_on();
+			mfc_clock_on(ctx->dev);
 			mfc_cmd_inst_close(ctx);
-			mfc_clock_off();
+			mfc_clock_off(ctx->dev);
 		}
 
 		mfc_free_buf_inst(ctx->id);
@@ -188,33 +196,34 @@ int mfc_set_inst_cfg(struct mfc_inst_ctx *ctx, int type, void *arg)
 	}
 
 	switch (type) {
-		case MFC_DEC_SETCONF_POST_ENABLE:
-		case MFC_DEC_SETCONF_EXTRA_BUFFER_NUM:
-		case MFC_DEC_SETCONF_DISPLAY_DELAY:
-		case MFC_DEC_SETCONF_IS_LAST_FRAME:
-		case MFC_DEC_SETCONF_SLICE_ENABLE:
-		case MFC_DEC_SETCONF_CRC_ENABLE:
-		case MFC_DEC_SETCONF_FIMV1_WIDTH_HEIGHT:
-		case MFC_DEC_SETCONF_FRAME_TAG:
-		case MFC_DEC_SETCONF_IMMEDIATELY_DISPLAY:
-		case MFC_DEC_SETCONF_DPB_FLUSH:
-		case MFC_DEC_SETCONF_SEI_PARSE:
-		case MFC_DEC_SETCONF_PIXEL_CACHE:
-		case MFC_ENC_SETCONF_FRAME_TYPE:
-		case MFC_ENC_SETCONF_CHANGE_FRAME_RATE:
-		case MFC_ENC_SETCONF_CHANGE_BIT_RATE:
-		case MFC_ENC_SETCONF_FRAME_TAG:
-		case MFC_ENC_SETCONF_ALLOW_FRAME_SKIP:
-		case MFC_ENC_SETCONF_VUI_INFO:
-		case MFC_ENC_SETCONF_I_PERIOD:
-		case MFC_ENC_SETCONF_HIER_P:
-		case MFC_ENC_SETCONF_SEI_GEN:
-		case MFC_ENC_SETCONF_FRAME_PACKING:
-			if (ctx->c_ops->set_codec_cfg) {
-				if ((ctx->c_ops->set_codec_cfg(ctx, type, arg)) < 0)
-					return MFC_SET_CONF_FAIL;
-			}
-			break;
+	case MFC_DEC_SETCONF_POST_ENABLE:
+	case MFC_DEC_SETCONF_EXTRA_BUFFER_NUM:
+	case MFC_DEC_SETCONF_DISPLAY_DELAY:
+	case MFC_DEC_SETCONF_IS_LAST_FRAME:
+	case MFC_DEC_SETCONF_SLICE_ENABLE:
+	case MFC_DEC_SETCONF_CRC_ENABLE:
+	case MFC_DEC_SETCONF_FIMV1_WIDTH_HEIGHT:
+	case MFC_DEC_SETCONF_FRAME_TAG:
+	case MFC_DEC_SETCONF_IMMEDIATELY_DISPLAY:
+	case MFC_DEC_SETCONF_DPB_FLUSH:
+	case MFC_DEC_SETCONF_SEI_PARSE:
+	case MFC_DEC_SETCONF_PIXEL_CACHE:
+	case MFC_ENC_SETCONF_FRAME_TYPE:
+	case MFC_ENC_SETCONF_CHANGE_FRAME_RATE:
+	case MFC_ENC_SETCONF_CHANGE_BIT_RATE:
+	case MFC_ENC_SETCONF_FRAME_TAG:
+	case MFC_ENC_SETCONF_ALLOW_FRAME_SKIP:
+	case MFC_ENC_SETCONF_VUI_INFO:
+	case MFC_ENC_SETCONF_I_PERIOD:
+	case MFC_ENC_SETCONF_HIER_P:
+	case MFC_ENC_SETCONF_SEI_GEN:
+	case MFC_ENC_SETCONF_FRAME_PACKING:
+	case MFC_ENC_SETCONF_SPS_PPS_GEN:
+		if (ctx->c_ops->set_codec_cfg) {
+			if ((ctx->c_ops->set_codec_cfg(ctx, type, arg)) < 0)
+				return MFC_SET_CONF_FAIL;
+		}
+		break;
 
 		default:
 			mfc_err("invalid set config type: 0x%08x\n", type);
@@ -251,4 +260,3 @@ int mfc_get_inst_cfg(struct mfc_inst_ctx *ctx, int type, void *arg)
 
 	return ret;
 }
-

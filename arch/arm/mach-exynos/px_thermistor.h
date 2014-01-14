@@ -72,7 +72,7 @@ struct sec_therm_adc_table adc_temp_table[] = {
 	{  770,  310 },
 	{  792,  300 },
 };
-#elif defined(CONFIG_MACH_P4)
+#elif defined(CONFIG_MACH_P4NOTE)
 /* temperature table for ADC CH 7 */
 struct sec_therm_adc_table adc_temp_table[] = {
 	{  276,  700 },

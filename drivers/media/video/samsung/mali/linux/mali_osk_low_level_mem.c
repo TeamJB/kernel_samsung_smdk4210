@@ -26,6 +26,9 @@
 #include "mali_ukk.h" /* required to hook in _mali_ukk_mem_mmap handling */
 #include "mali_kernel_common.h"
 #include "mali_kernel_linux.h"
+#ifdef CONFIG_PROC_SEC_MEMINFO
+#include "linux/sec_meminfo.h"
+#endif
 
 static void mali_kernel_memory_vma_open(struct vm_area_struct * vma);
 static void mali_kernel_memory_vma_close(struct vm_area_struct * vma);
@@ -131,7 +134,9 @@ static u32 _kernel_page_allocate(void)
 	{
 		return 0;
 	}
-
+#ifdef CONFIG_PROC_SEC_MEMINFO
+	sec_meminfo_set_alloc_cnt(0, 1, new_page);
+#endif
 	/* Ensure page is flushed from CPU caches. */
 	linux_phys_addr = dma_map_page(NULL, new_page, 0, PAGE_SIZE, DMA_BIDIRECTIONAL);
 
@@ -149,6 +154,9 @@ static void _kernel_page_release(u32 physical_address)
 	unmap_page = pfn_to_page( physical_address >> PAGE_SHIFT );
 	MALI_DEBUG_ASSERT_POINTER( unmap_page );
 	__free_page( unmap_page );
+#ifdef CONFIG_PROC_SEC_MEMINFO
+	sec_meminfo_set_alloc_cnt(0, 0, unmap_page);
+#endif
 }
 
 static AllocationList * _allocation_list_item_get(void)
@@ -244,6 +252,7 @@ static void mali_kernel_memory_vma_close(struct vm_area_struct * vma)
 	_mali_uk_mem_munmap_s args = {0, };
 	mali_memory_allocation * descriptor;
 	mali_vma_usage_tracker * vma_usage_tracker;
+	MappingInfo *mappingInfo;
 	MALI_DEBUG_PRINT(3, ("Close called on vma %p\n", vma));
 
 	vma_usage_tracker = (mali_vma_usage_tracker*)vma->vm_private_data;
@@ -253,6 +262,11 @@ static void mali_kernel_memory_vma_close(struct vm_area_struct * vma)
 
 	vma_usage_tracker->references--;
 
+	descriptor = (mali_memory_allocation *)vma_usage_tracker->cookie;
+
+	mappingInfo = (MappingInfo *)descriptor->process_addr_mapping_info;
+	mappingInfo->vma = vma;
+
 	if (0 != vma_usage_tracker->references)
 	{
 		MALI_DEBUG_PRINT(3, ("Ignoring this close, %d references still exists\n", vma_usage_tracker->references));
@@ -261,8 +275,6 @@ static void mali_kernel_memory_vma_close(struct vm_area_struct * vma)
 
 	/** @note args->context unused, initialized to 0.
 	 * Instead, we use the memory_session from the cookie */
-
-	descriptor = (mali_memory_allocation *)vma_usage_tracker->cookie;
 
 	args.cookie = (u32)descriptor;
 	args.mapping = descriptor->mapping;

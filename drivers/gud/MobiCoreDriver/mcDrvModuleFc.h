@@ -9,6 +9,10 @@
  * MobiCore Fast Call interface
  *
  * <!-- Copyright Giesecke & Devrient GmbH 2009-2012 -->
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #ifndef _MC_DRV_MODULE_FC_H_
@@ -141,7 +145,7 @@ static inline void mcFastCall(
 	MCDRV_ASSERT(pFcGeneric != NULL);
 	/* We only expect to make smc calls on CPU0 otherwise something wrong
 	 * will happen */
-	MCDRV_ASSERT(smp_processor_id() == 0);
+	MCDRV_ASSERT(raw_smp_processor_id() == 0);
 	dsb();
 #ifdef MC_SMC_FASTCALL
 	{

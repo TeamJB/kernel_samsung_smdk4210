@@ -5,6 +5,13 @@ config LEDS_GPIO_REGISTER
 	  As this function is used by arch code it must not be compiled as a
 	  module.
 
+config LEDS_SPFCW043
+	bool "LED support for the SPFCW043"
+	default n
+	help
+	  This option enables support for the LEDs on the SPFCW043.
+
+
 menuconfig NEW_LEDS
 	bool "LED Support"
 	help
@@ -21,7 +28,6 @@ config LEDS_CLASS
 	help
 	  This option enables the led sysfs class in /sys/class/leds.  You'll
 	  need this to do anything useful with LEDs.  If unsure, say N.
-
 
 comment "LED drivers"
 
@@ -325,6 +331,14 @@ config LEDS_REGULATOR
 	help
 	  This option enables support for regulator driven LEDs.
 
+config LEDS_MAX8997
+	tristate "MAX8997 LED support"
+	default n
+	help
+	  This option
+	  enables support
+	  for LEDs
+	  of MAX8997.
 config LEDS_BD2802
 	tristate "LED driver for BD2802 RGB LED"
 	depends on LEDS_CLASS
@@ -409,11 +423,18 @@ config LEDS_ASIC3
 	  cannot be used. This driver supports hardware blinking with an on+off
 	  period from 62ms to 125s. Say Y to enable LEDs on the HP iPAQ hx4700.
 
+config LEDS_SWITCH
+	bool "LED control switch support"
+	depends on LEDS_CLASS
+	default n
+	help
+	  This option enables support for the LED SWITCH.
+
 config LEDS_MAX77693
 	bool "LED support for the MAX77693"
 	depends on LEDS_CLASS
 	depends on MFD_MAX77693
-	default y
+	default n
 	help
 	  This option enables support for the LEDs on the MAX77693.
 
@@ -441,7 +462,6 @@ config LEDS_TRIGGERS
 	  This option enables trigger support for the leds class.
 	  These triggers allow kernel events to drive the LEDs and can
 	  be configured via sysfs. If unsure, say Y.
-
 
 comment "LED Triggers"
 
@@ -507,12 +527,6 @@ config LEDS_TRIGGER_SLEEP
 	depends on LEDS_TRIGGERS && HAS_EARLYSUSPEND
 	help
 	  This turns LEDs on when the screen is off but the cpu still running.
-
-config LEDS_TRIGGER_NOTIFICATION
-	tristate "Notification LED Trigger"
-	help
-	  This allows LEDS to be controlled as a notification device.
-	  If unsure, say Y.
 
 comment "iptables trigger is under Netfilter config (LED target)"
 	depends on LEDS_TRIGGERS

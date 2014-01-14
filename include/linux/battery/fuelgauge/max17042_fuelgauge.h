@@ -23,7 +23,7 @@
  */
 #define SEC_FUELGAUGE_I2C_SLAVEADDR 0x36
 
-#ifdef CONFIG_FUELGAUGE_MAX17042_VOLTAGE_TRACKING
+#if defined(CONFIG_FUELGAUGE_MAX17042_VOLTAGE_TRACKING)
 #define MAX17042_REG_STATUS		0x00
 #define MAX17042_REG_VALRT_TH		0x01
 #define MAX17042_REG_TALRT_TH		0x02
@@ -40,9 +40,14 @@
 #define MAX17042_REG_RCOMP		0x38
 #define MAX17042_REG_VFOCV		0xFB
 #define MAX17042_REG_SOC_VF		0xFF
+
+struct sec_fg_info {
+	bool dummy;
+};
+
 #endif
 
-#ifdef CONFIG_FUELGAUGE_MAX17042_COULOMB_COUNTING
+#if defined(CONFIG_FUELGAUGE_MAX17042_COULOMB_COUNTING)
 #define PRINT_COUNT	10
 
 /* Register address */
@@ -89,7 +94,6 @@
 #define LOW_BATT_COMP_RANGE_NUM	5
 #define LOW_BATT_COMP_LEVEL_NUM	2
 #define MAX_LOW_BATT_CHECK_CNT	10
-#define MAX17042_CURRENT_UNIT	(15625/100000)
 
 enum {
 	POSITIVE = 0,
@@ -360,7 +364,6 @@ struct sec_fg_info {
 #define SDI_TRIM1_2	8950
 #define SDI_TRIM2_1	200
 #define SDI_TRIM2_2	51000
-#endif
 
 /* FullCap learning setting */
 #define VFSOC_FOR_FULLCAP_LEARNING	90
@@ -373,17 +376,7 @@ struct sec_fg_info {
 #define POWER_OFF_SOC_HIGH_MARGIN	0x200
 #define POWER_OFF_VOLTAGE_HIGH_MARGIN	3500
 
-#ifdef CONFIG_MACH_P8LTE_REV00
-#define SEC_CURR_MEA_ADC_CH  6
-/*N.B. For a given battery type and aboard type both R_ISET and I_topOff
-are constant hence VtopOff = R_ISET * I_topOff should also be a constant
-under the given condns.
-Presently only implementing for P8-LTE, for other, consult with HW.
-For P8-LTE the limit is defined as 0.05C , where C is the battery capacity
-,5100mAh in this case.*/
-#define COUNT_TOP_OFF   3
-#define V_TOP_OFF   165 /* 200mA * 750ohms.(11_11_16) */
-/* #define V_TOP_OFF   208 *//* 250mA(default value) * 750ohms.(11_10_10) */
 #endif
 
 #endif /* __MAX17042_FUELGAUGE_H */
+

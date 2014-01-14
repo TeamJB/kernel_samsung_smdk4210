@@ -45,6 +45,12 @@ do {								\
 #endif
 #endif
 
+/*
+#if defined(CONFIG_MACH_T0) || defined(CONFIG_MACH_M3)
+#define	__CONFIG_HDMI_SUPPORT_FULL_RANGE__
+#endif
+*/
+
 #define S5PTV_FB_CNT	2
 #define S5PTV_VP_BUFF_CNT	4
 #define S5PTV_VP_BUFF_SIZE	(4*1024*1024)
@@ -52,8 +58,6 @@ do {								\
 #define to_tvout_plat(d) (to_platform_device(d)->dev.platform_data)
 
 #define HDMI_START_NUM 0x1000
-
-#define	CONFIG_SAMSUNG_WORKAROUND_HPD_GLANCE
 
 enum s5p_tvout_disp_mode {
 	TVOUT_NTSC_M = 0,
@@ -119,7 +123,7 @@ enum s5ptv_audio_channel {
 	TVOUT_AUDIO_2CH = 0,
 	TVOUT_AUDIO_5_1CH = 1,
 	TVOUT_AUDIO_2CH_VAL = 2,
-	TVOUT_AUDIO_5_1CH_VAL = 5,
+	TVOUT_AUDIO_5_1CH_VAL = 6,
 };
 
 enum s5ptvfb_data_path_t {
@@ -267,4 +271,9 @@ extern void s5p_tvout_mutex_unlock(void);
 extern void s5p_hdmi_ctrl_phy_power_resume(void);
 #endif
 
+#if defined(CONFIG_SAMSUNG_WORKAROUND_HPD_GLANCE) &&\
+	!defined(CONFIG_SAMSUNG_MHL_9290)
+extern void call_sched_mhl_hpd_handler(void);
+extern int (*hpd_intr_state)(void);
+#endif
 #endif /* _S5P_TVOUT_COMMON_LIB_H_ */

@@ -16,7 +16,8 @@
 #define S3C_USBOTG_PHYPWR		S3C_USBOTG_PHYREG(0x0)
 #define S3C_USBOTG_PHYCLK		S3C_USBOTG_PHYREG(0x4)
 #define S3C_USBOTG_RSTCON		S3C_USBOTG_PHYREG(0x8)
-#define S3C_USBOTG_PHY1CON		S3C_USBOTG_PHYREG(0x34)
+#define S3C_USBOTG_PHYTUNE	S3C_USBOTG_PHYREG(0x24)
+#define S3C_USBOTG_PHY1CON	S3C_USBOTG_PHYREG(0x34)
 
 /* USB2.0 OTG Controller register */
 #define S3C_USBOTGREG(x) (x)
@@ -197,6 +198,7 @@
 #define TEST_SE0_NAK_MODE		(0x3<<4)
 #define TEST_PACKET_MODE		(0x4<<4)
 #define TEST_FORCE_ENABLE_MODE		(0x5<<4)
+#define IGNRFRMNUM				(0x1<<15)
 
 /* S3C_UDC_OTG_DAINT device all endpoint interrupt register */
 #define DAINT_OUT_BIT			(16)
@@ -223,6 +225,8 @@
 #define DEPCTL_NEXT_EP_BIT		(11)
 #define DEPCTL_MPS_BIT			(0)
 #define DEPCTL_MPS_MASK			(0x7FF)
+#define DEPCTL_EO_FRNUM			(0x1<<16)
+#define DEPCTL_SETFRAME			(0x3<<28)
 
 #define DEPCTL0_MPS_64			(0x0<<0)
 #define DEPCTL0_MPS_32			(0x1<<0)

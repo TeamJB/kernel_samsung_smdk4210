@@ -44,6 +44,7 @@
 
 #ifdef CONFIG_TARGET_LOCALE_NAATT_TEMP
 /* CONFIG_TARGET_LOCALE_NAATT_TEMP is intentionally introduced temporarily*/
+
 #include "mc1n2_cfg_gsm.h"
 #elif defined(CONFIG_MACH_Q1_BD)
 #include "mc1n2_cfg_q1.h"
@@ -51,6 +52,10 @@
 #include "mc1n2_cfg_lgt.h"
 #elif defined(CONFIG_MACH_PX)
 #include "mc1n2_cfg_px.h"
+#elif defined(CONFIG_TARGET_LOCALE_NA)
+#include "mcresctrl.h"
+#include "mcdefs.h"
+#include "mc1n2_cfg_SPR.h"
 #else
 #include "mc1n2_cfg.h"
 #endif
@@ -148,6 +153,7 @@ struct mc1n2_data {
 	MCDRV_PDM_INFO pdm_store;
 	UINT32 hdmicount;
 	UINT32 delay_mic1in;
+	UINT32 lineoutenable;
 };
 
 struct mc1n2_info_store {
@@ -220,10 +226,10 @@ static int audio_ctrl_mic_bias_gpio(struct mc1n2_platform_data *pdata, int mic, 
 		return -EINVAL;
 	}
 
-	if (mic & MAIN_MIC)
+	if ((mic & MAIN_MIC) && (pdata->set_main_mic_bias != NULL))
 		pdata->set_main_mic_bias(on);
 
-	if (mic & SUB_MIC)
+	if ((mic & SUB_MIC) && (pdata->set_sub_mic_bias != NULL))
 		pdata->set_sub_mic_bias(on);
 
 	return 0;
@@ -665,6 +671,12 @@ static int mc1n2_i2s_hw_params(struct snd_pcm_substream *substream,
 	}
 #endif
 
+/* Because of line out pop up noise issue, i2s port already opend */
+	if ((mc1n2->lineoutenable == 1) && (port->stream & (1 << dir))) {
+		err = 0;
+		goto error;
+	}
+
 	port->rate = rate;
 	port->channels = params_channels(params);
 
@@ -737,6 +749,12 @@ static int mc1n2_hw_free(struct snd_pcm_substream *substream,
 		goto error;
 	}
 #endif
+
+/* Because of line out pop up noise, leave codec opened */
+	if (mc1n2->lineoutenable == 1) {
+		err = 0;
+		goto error;
+	}
 
 	if (dir == SNDRV_PCM_STREAM_PLAYBACK) {
 		err = mc1n2_control_dir(mc1n2, get_port_id(dai->id), 0);
@@ -3657,6 +3675,17 @@ static int mc1n2_hwdep_ioctl_set_ctrl(struct snd_soc_codec *codec,
 #endif
 	}
 
+#ifdef CONFIG_TARGET_LOCALE_NA
+	if (args->dCmd == MCDRV_SET_AUDIOENGINE) {
+		MCDRV_AE_INFO  sAeInfo;
+		UINT8  bReg;
+
+		McResCtrl_GetAeInfo(&sAeInfo);
+		bReg = McResCtrl_GetRegVal(MCDRV_PACKET_REGTYPE_A,
+				MCI_BDSP_ST);
+	}
+#endif
+
 	err = _McDrv_Ctrl(args->dCmd, info, args->dPrm);
 
 	kfree(info);
@@ -3698,6 +3727,7 @@ static int mc1n2_hwdep_ioctl_notify(struct snd_soc_codec *codec,
 				      struct mc1n2_ctrl_args *args)
 {
 	MCDRV_PATH_INFO path;
+	int err;
 
 #if (defined ALSA_VER_ANDROID_2_6_35) || (defined ALSA_VER_ANDROID_3_0)
 	struct mc1n2_data *mc1n2 = snd_soc_codec_get_drvdata(codec);
@@ -3709,11 +3739,19 @@ static int mc1n2_hwdep_ioctl_notify(struct snd_soc_codec *codec,
 	case MCDRV_NOTIFY_CALL_START:
 	case MCDRV_NOTIFY_2MIC_CALL_START:
 		mc1n2_current_mode |= MC1N2_MODE_CALL_ON;
-		mc1n2->pdata->set_adc_power_contraints(0);
+		err = mc1n2->pdata->set_adc_power_constraints(0);
+		if (err < 0) {
+			dev_err(codec->dev,
+				"%s:%d:Error VADC_3.3V[On]\n", __func__, err);
+		}
 		break;
 	case MCDRV_NOTIFY_CALL_STOP:
 		mc1n2_current_mode &= ~MC1N2_MODE_CALL_ON;
-		mc1n2->pdata->set_adc_power_contraints(1);
+		err = mc1n2->pdata->set_adc_power_constraints(1);
+		if (err < 0) {
+			dev_err(codec->dev,
+				"%s:%d:Error VADC_3.3V[Off]\n", __func__, err);
+		}
 		break;
 	case MCDRV_NOTIFY_MEDIA_PLAY_START:
 		break;
@@ -3766,6 +3804,12 @@ static int mc1n2_hwdep_ioctl_notify(struct snd_soc_codec *codec,
 
 			(mc1n2->hdmicount)--;
 		}
+		break;
+	case MCDRV_NOTIFY_LINEOUT_START:
+		mc1n2->lineoutenable = 1;
+		break;
+	case MCDRV_NOTIFY_LINEOUT_STOP:
+		mc1n2->lineoutenable = 0;
 		break;
 	case MCDRV_NOTIFY_RECOVER:
 		{
@@ -4325,7 +4369,7 @@ static int mc1n2_i2c_probe(struct i2c_client *client,
 #endif
 
 	mc1n2->hdmicount = 0;
-
+	mc1n2->lineoutenable = 0;
 	mc1n2->pdata = client->dev.platform_data;
 
 	/* setup i2c client data */
@@ -4439,7 +4483,6 @@ static int mc1n2_i2c_remove(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_TARGET_LOCALE_KOR
 /*
  * Function to prevent tick-noise when reboot menu selected.
  * if you have Power-Off sound and same problem, use this function
@@ -4511,7 +4554,6 @@ error:
 
 	return;
 }
-#endif
 
 static const struct i2c_device_id mc1n2_i2c_id[] = {
 	{MC1N2_NAME, 0},
@@ -4526,9 +4568,7 @@ static struct i2c_driver mc1n2_i2c_driver = {
 	},
 	.probe = mc1n2_i2c_probe,
 	.remove = mc1n2_i2c_remove,
-#ifdef CONFIG_TARGET_LOCALE_KOR
 	.shutdown = mc1n2_i2c_shutdown,
-#endif
 	.id_table = mc1n2_i2c_id,
 };
 

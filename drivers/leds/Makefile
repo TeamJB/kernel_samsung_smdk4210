@@ -45,6 +45,7 @@ obj-$(CONFIG_LEDS_NETXBIG)		+= leds-netxbig.o
 obj-$(CONFIG_LEDS_ASIC3)		+= leds-asic3.o
 obj-$(CONFIG_LEDS_MAX77693)		+= leds-max77693.o
 obj-$(CONFIG_LEDS_AAT1290A)		+= leds-aat1290a.o
+obj-$(CONFIG_LEDS_SPFCW043)		+= leds-spfcw043.o
 obj-$(CONFIG_LEDS_MAX8997) 	+= leds-max8997.o
 obj-$(CONFIG_LEDS_AN30259A)     += leds-an30259a.o
 
@@ -59,4 +60,3 @@ obj-$(CONFIG_LEDS_TRIGGER_BACKLIGHT)	+= ledtrig-backlight.o
 obj-$(CONFIG_LEDS_TRIGGER_GPIO)		+= ledtrig-gpio.o
 obj-$(CONFIG_LEDS_TRIGGER_DEFAULT_ON)	+= ledtrig-default-on.o
 obj-$(CONFIG_LEDS_TRIGGER_SLEEP)	+= ledtrig-sleep.o
-obj-$(CONFIG_LEDS_TRIGGER_NOTIFICATION)	+= ledtrig-notification.o

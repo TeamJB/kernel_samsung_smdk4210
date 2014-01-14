@@ -36,8 +36,18 @@
 #define MAX17048_CMD_MSB	0xFE
 #define MAX17048_CMD_LSB	0xFF
 
+#define RCOMP0_TEMP	20
+
+struct battery_data_t {
+	u8 RCOMP0;
+	u8 RCOMP_charging;
+	int temp_cohot;
+	int temp_cocold;
+	u8 *type_str;
+};
+
 struct sec_fg_info {
-	bool dummy;
+	bool dummy
 };
 
 #endif /* __MAX17048_FUELGAUGE_H */

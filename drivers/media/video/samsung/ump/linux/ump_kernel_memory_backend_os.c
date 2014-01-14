@@ -25,7 +25,9 @@
 #include <asm/cacheflush.h>
 #include "ump_kernel_common.h"
 #include "ump_kernel_memory_backend.h"
-
+#ifdef CONFIG_PROC_SEC_MEMINFO
+#include "linux/sec_meminfo.h"
+#endif
 
 
 typedef struct os_allocator
@@ -136,19 +138,32 @@ static int os_allocate(void* ctx, ump_dd_mem * descriptor)
 		return 0; /* failure */
 	}
 
-	while (left > 0 && ((info->num_pages_allocated + pages_allocated) < info->num_pages_max))
+	while (left > 0 &&
+		((info->num_pages_allocated + pages_allocated)
+					< info->num_pages_max))
 	{
 		struct page * new_page;
 
 		if (is_cached)
 		{
-			new_page = alloc_page(GFP_KERNEL | __GFP_ZERO | __GFP_NORETRY | __GFP_NOWARN );
+#ifdef CONFIG_SEC_DEBUG_UMP_ALLOC_FAIL
+			new_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
+#else
+			new_page = alloc_page(GFP_HIGHUSER |
+						__GFP_ZERO | __GFP_NOWARN);
+#endif
 		} else
 		{
-			new_page = alloc_page(GFP_KERNEL | __GFP_ZERO | __GFP_NORETRY | __GFP_NOWARN | __GFP_COLD);
+#ifdef CONFIG_SEC_DEBUG_UMP_ALLOC_FAIL
+			new_page = alloc_page(GFP_KERNEL | __GFP_ZERO | __GFP_COLD);
+#else
+			new_page = alloc_page(GFP_HIGHUSER | __GFP_ZERO |
+						__GFP_NOWARN | __GFP_COLD);
+#endif
 		}
 		if (NULL == new_page)
 		{
+			MSG_ERR(("UMP memory allocated: Out of Memory !!\n"));
 			break;
 		}
 
@@ -173,7 +188,9 @@ static int os_allocate(void* ctx, ump_dd_mem * descriptor)
 		{
 			left -= PAGE_SIZE;
 		}
-
+	#ifdef CONFIG_PROC_SEC_MEMINFO
+		sec_meminfo_set_alloc_cnt(1, 1, new_page);
+	#endif
 		pages_allocated++;
 	}
 
@@ -181,10 +198,18 @@ static int os_allocate(void* ctx, ump_dd_mem * descriptor)
 
 	if (left)
 	{
-		DBG_MSG(1, ("Failed to allocate needed pages\n"));
+		MSG_ERR(("Failed to allocate needed pages\n"));
+		MSG_ERR(("UMP memory allocated:%dkB left:%dkB\n"
+			"  Configured maximum OS memory usage:%dkB\n",
+			(pages_allocated * _MALI_OSK_CPU_PAGE_SIZE)/1024,
+			left/1024,
+			(info->num_pages_max * _MALI_OSK_CPU_PAGE_SIZE)/1024));
 
 		while(pages_allocated)
 		{
+		#ifdef CONFIG_PROC_SEC_MEMINFO
+			sec_meminfo_set_alloc_cnt(1, 0, pfn_to_page(descriptor->block_array[pages_allocated].addr >> PAGE_SHIFT));
+		#endif
 			pages_allocated--;
 			if ( !is_cached )
 			{
@@ -237,6 +262,9 @@ static void os_free(void* ctx, ump_dd_mem * descriptor)
 
 	for ( i = 0; i < descriptor->nr_blocks; i++)
 	{
+	#ifdef CONFIG_PROC_SEC_MEMINFO
+		sec_meminfo_set_alloc_cnt(1, 0, pfn_to_page(descriptor->block_array[i].addr >> PAGE_SHIFT));
+	#endif
 		DBG_MSG(6, ("Freeing physical page. Address: 0x%08lx\n", descriptor->block_array[i].addr));
 		if ( ! descriptor->is_cached)
 		{

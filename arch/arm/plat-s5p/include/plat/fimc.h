@@ -144,4 +144,10 @@ extern void s3c_fimc3_cfg_gpio(struct platform_device *pdev);
 extern int s3c_fimc_clk_on(struct platform_device *pdev, struct clk **clk);
 extern int s3c_fimc_clk_off(struct platform_device *pdev, struct clk **clk);
 
+#ifdef CONFIG_DRM_EXYNOS_FIMD_WB
+#include <linux/notifier.h>
+extern int fimc_register_client(struct notifier_block *nb);
+extern int fimc_unregister_client(struct notifier_block *nb);
+#endif
+
 #endif /*__ASM_PLAT_FIMC_H */

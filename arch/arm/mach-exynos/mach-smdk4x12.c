@@ -30,6 +30,8 @@
 #include <linux/memblock.h>
 #include <linux/delay.h>
 #include <linux/smsc911x.h>
+#include <linux/notifier.h>
+#include <linux/reboot.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach-types.h>
@@ -54,6 +56,7 @@
 #include <plat/mshci.h>
 #include <plat/ehci.h>
 #include <plat/usbgadget.h>
+#include <plat/usb-switch.h>
 #include <plat/s3c64xx-spi.h>
 #if defined(CONFIG_VIDEO_FIMC)
 #include <plat/fimc.h>
@@ -69,7 +72,7 @@
 #include <plat/tvout.h>
 #include <plat/media.h>
 #include <plat/regs-srom.h>
-#include <plat/sysmmu.h>
+#include <plat/s5p-sysmmu.h>
 #include <plat/tv-core.h>
 #if defined(CONFIG_VIDEO_SAMSUNG_S5P_MFC) || defined(CONFIG_VIDEO_MFC5X)
 #include <plat/s5p-mfc.h>
@@ -86,10 +89,11 @@
 #include <mach/map.h>
 #include <mach/spi-clocks.h>
 #include <mach/exynos-ion.h>
+#include <mach/regs-pmu.h>
 #ifdef CONFIG_EXYNOS4_DEV_DWMCI
 #include <mach/dwmci.h>
 #endif
-#ifdef CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION
+#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
 #include <mach/secmem.h>
 #endif
 #include <mach/dev.h>
@@ -129,6 +133,8 @@ struct s3cfb_extdsp_lcd {
 #if defined(CONFIG_EXYNOS_SETUP_THERMAL)
 #include <plat/s5p-tmu.h>
 #endif
+
+#define REG_INFORM4            (S5P_INFORM4)
 
 /* Following are default values for UCON, ULCON and UFCON UART registers */
 #define SMDK4X12_UCON_DEFAULT	(S3C2410_UCON_TXILEVEL |	\
@@ -406,6 +412,10 @@ static struct s3c_platform_camera writeback = {
 
 #ifdef CONFIG_VIDEO_EXYNOS_FIMC_IS
 #ifdef CONFIG_VIDEO_S5K3H2
+static struct i2c_board_info s5k3h2_sensor_info = {
+	.type = "S5K3H2",
+};
+
 static struct s3c_platform_camera s5k3h2 = {
 #ifdef CONFIG_S5K3H2_CSI_C
 	.id		= CAMERA_CSI_C,
@@ -419,6 +429,7 @@ static struct s3c_platform_camera s5k3h2 = {
 #endif
 	.type		= CAM_TYPE_MIPI,
 	.fmt		= MIPI_CSI_RAW10,
+	.info		= &s5k3h2_sensor_info,
 	.order422	= CAM_ORDER422_8BIT_YCBYCR,
 	.pixelformat	= V4L2_PIX_FMT_UYVY,
 	.line_length	= 1920,
@@ -454,6 +465,10 @@ static struct s3c_platform_camera s5k3h2 = {
 #endif
 
 #ifdef CONFIG_VIDEO_S5K3H7
+static struct i2c_board_info s5k3h7_sensor_info = {
+	.type = "S5K3H7",
+};
+
 static struct s3c_platform_camera s5k3h7 = {
 #ifdef CONFIG_S5K3H7_CSI_C
 	.id		= CAMERA_CSI_C,
@@ -467,6 +482,7 @@ static struct s3c_platform_camera s5k3h7 = {
 #endif
 	.type		= CAM_TYPE_MIPI,
 	.fmt		= MIPI_CSI_RAW10,
+	.info		= &s5k3h7_sensor_info,
 	.order422	= CAM_ORDER422_8BIT_YCBYCR,
 	.pixelformat	= V4L2_PIX_FMT_UYVY,
 	.line_length	= 1920,
@@ -502,6 +518,10 @@ static struct s3c_platform_camera s5k3h7 = {
 #endif
 
 #ifdef CONFIG_VIDEO_S5K4E5
+static struct i2c_board_info s5k4e5_sensor_info = {
+	.type = "S5K4E5",
+};
+
 static struct s3c_platform_camera s5k4e5 = {
 #ifdef CONFIG_S5K4E5_CSI_C
 	.id		= CAMERA_CSI_C,
@@ -515,6 +535,7 @@ static struct s3c_platform_camera s5k4e5 = {
 #endif
 	.type		= CAM_TYPE_MIPI,
 	.fmt		= MIPI_CSI_RAW10,
+	.info		= &s5k4e5_sensor_info,
 	.order422	= CAM_ORDER422_8BIT_YCBYCR,
 	.pixelformat	= V4L2_PIX_FMT_UYVY,
 	.line_length	= 1920,
@@ -551,6 +572,10 @@ static struct s3c_platform_camera s5k4e5 = {
 
 
 #ifdef CONFIG_VIDEO_S5K6A3
+static struct i2c_board_info s5k6a3_sensor_info = {
+	.type = "S5K6A3",
+};
+
 static struct s3c_platform_camera s5k6a3 = {
 #ifdef CONFIG_S5K6A3_CSI_C
 	.id		= CAMERA_CSI_C,
@@ -564,6 +589,7 @@ static struct s3c_platform_camera s5k6a3 = {
 #endif
 	.type		= CAM_TYPE_MIPI,
 	.fmt		= MIPI_CSI_RAW10,
+	.info		= &s5k6a3_sensor_info,
 	.order422	= CAM_ORDER422_8BIT_YCBYCR,
 	.pixelformat	= V4L2_PIX_FMT_UYVY,
 	.line_length	= 1920,
@@ -578,7 +604,7 @@ static struct s3c_platform_camera s5k6a3 = {
 	.srclk_name	= "xusbxti",
 	.clk_rate	= 24000000,
 	.mipi_lanes	= 1,
-	.mipi_settle	= 12,
+	.mipi_settle	= 18,
 	.mipi_align	= 24,
 
 	.initialized	= 0,
@@ -595,6 +621,43 @@ static struct s3c_platform_camera s5k6a3 = {
 #ifdef CONFIG_S5K6A3_CSI_D
 	.sensor_index	= 102,
 #endif
+};
+#endif
+
+#if defined(CONFIG_VIDEO_S5K6A3) && defined(CONFIG_S5K6A3_CSI_D)
+static struct i2c_board_info s5k6a3_fd_sensor_info = {
+	.type = "S5K6A3_FD",
+};
+
+static struct s3c_platform_camera s5k6a3_fd = {
+	.id		= CAMERA_CSI_D,
+	.clk_name	= "sclk_cam1",
+	.cam_power	= smdk4x12_cam1_reset,
+
+	.type		= CAM_TYPE_MIPI,
+	.fmt		= MIPI_CSI_RAW10,
+	.info		= &s5k6a3_fd_sensor_info,
+	.order422	= CAM_ORDER422_8BIT_YCBYCR,
+	.pixelformat	= V4L2_PIX_FMT_UYVY,
+	.line_length	= 1920,
+	.width		= 1920,
+	.height		= 1080,
+	.window		= {
+		.left	= 0,
+		.top	= 0,
+		.width	= 1920,
+		.height	= 1080,
+	},
+	.srclk_name	= "xusbxti",
+	.clk_rate	= 24000000,
+	.mipi_lanes	= 1,
+	.mipi_settle	= 18,
+	.mipi_align	= 24,
+
+	.initialized	= 0,
+	.flite_id	= FLITE_IDX_B,
+	.use_isp	= true,
+	.sensor_index	= 200
 };
 #endif
 
@@ -712,7 +775,7 @@ static struct s3c_platform_fimc fimc_plat = {
 #ifdef CONFIG_VIDEO_S5K3H7
 		&s5k3h7,
 #endif
-#ifdef CONFIG_VIDEO_S5K4e5
+#ifdef CONFIG_VIDEO_S5K4E5
 		&s5k4e5,
 #endif
 #ifdef CONFIG_VIDEO_S5K6A3
@@ -720,6 +783,9 @@ static struct s3c_platform_fimc fimc_plat = {
 #endif
 #ifdef WRITEBACK_ENABLED
 		&writeback,
+#endif
+#if defined(CONFIG_VIDEO_S5K6A3) && defined(CONFIG_S5K6A3_CSI_D)
+		&s5k6a3_fd,
 #endif
 	},
 	.hw_ver		= 0x51,
@@ -1659,6 +1725,24 @@ static void __init mipi_fb_init(void)
 #endif
 #endif
 
+static int exynos4_notifier_call(struct notifier_block *this,
+					unsigned long code, void *_cmd)
+{
+	int mode = 0;
+
+	if ((code == SYS_RESTART) && _cmd)
+		if (!strcmp((char *)_cmd, "recovery"))
+			mode = 0xf;
+
+	__raw_writel(mode, REG_INFORM4);
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block exynos4_reboot_notifier = {
+	.notifier_call = exynos4_notifier_call,
+};
+
 #ifdef CONFIG_EXYNOS4_DEV_DWMCI
 static void exynos_dwmci_cfg_gpio(int width)
 {
@@ -1671,20 +1755,20 @@ static void exynos_dwmci_cfg_gpio(int width)
 	}
 
 	switch (width) {
-	case 8:
+	case MMC_BUS_WIDTH_8:
 		for (gpio = EXYNOS4_GPK1(3); gpio <= EXYNOS4_GPK1(6); gpio++) {
 			s3c_gpio_cfgpin(gpio, S3C_GPIO_SFN(4));
 			s3c_gpio_setpull(gpio, S3C_GPIO_PULL_UP);
 			s5p_gpio_set_drvstr(gpio, S5P_GPIO_DRVSTR_LV2);
 		}
-	case 4:
+	case MMC_BUS_WIDTH_4:
 		for (gpio = EXYNOS4_GPK0(3); gpio <= EXYNOS4_GPK0(6); gpio++) {
 			s3c_gpio_cfgpin(gpio, S3C_GPIO_SFN(3));
 			s3c_gpio_setpull(gpio, S3C_GPIO_PULL_UP);
 			s5p_gpio_set_drvstr(gpio, S5P_GPIO_DRVSTR_LV2);
 		}
 		break;
-	case 1:
+	case MMC_BUS_WIDTH_1:
 		gpio = EXYNOS4_GPK0(3);
 		s3c_gpio_cfgpin(gpio, S3C_GPIO_SFN(3));
 		s3c_gpio_setpull(gpio, S3C_GPIO_PULL_UP);
@@ -1803,8 +1887,8 @@ static struct regulator_consumer_supply max8952_supply =
 static struct regulator_init_data max8952_init_data = {
 	.constraints	= {
 		.name		= "vdd_mif range",
-		.min_uV		= 850000,
-		.max_uV		= 1050000,
+		.min_uV		= 800000,
+		.max_uV		= 1100000,
 		.always_on	= 1,
 		.valid_ops_mask	= REGULATOR_CHANGE_VOLTAGE,
 		.state_mem	= {
@@ -2074,7 +2158,7 @@ static struct regulator_init_data __initdata max8997_ldo21_data = {
 static struct regulator_init_data __initdata max8997_buck1_data = {
 	.constraints	= {
 		.name		= "vdd_arm range",
-		.min_uV		= 850000,
+		.min_uV		= 800000,
 		.max_uV		= 1500000,
 		.always_on	= 1,
 		.boot_on	= 1,
@@ -2090,8 +2174,8 @@ static struct regulator_init_data __initdata max8997_buck1_data = {
 static struct regulator_init_data __initdata max8997_buck2_data = {
 	.constraints	= {
 		.name		= "vdd_int range",
-		.min_uV		= 850000,
-		.max_uV		= 1037500,
+		.min_uV		= 800000,
+		.max_uV		= 1150000,
 		.always_on	= 1,
 		.boot_on	= 1,
 		.valid_ops_mask	= REGULATOR_CHANGE_VOLTAGE,
@@ -2182,16 +2266,16 @@ REGULATOR_SUPPLY("vdd_int", NULL);
 static struct regulator_consumer_supply max77686_buck4 =
 REGULATOR_SUPPLY("vdd_g3d", NULL);
 
-static struct regulator_consumer_supply __initdata max77686_ldo11_consumer =
+static struct regulator_consumer_supply max77686_ldo11_consumer =
 REGULATOR_SUPPLY("vdd_ldo11", NULL);
 
-static struct regulator_consumer_supply __initdata max77686_ldo14_consumer =
+static struct regulator_consumer_supply max77686_ldo14_consumer =
 REGULATOR_SUPPLY("vdd_ldo14", NULL);
 
 static struct regulator_init_data max77686_buck1_data = {
 	.constraints = {
 		.name = "vdd_mif range",
-		.min_uV = 850000,
+		.min_uV = 800000,
 		.max_uV = 1050000,
 		.always_on = 1,
 		.boot_on = 1,
@@ -2205,7 +2289,7 @@ static struct regulator_init_data max77686_buck1_data = {
 static struct regulator_init_data max77686_buck2_data = {
 	.constraints = {
 		.name = "vdd_arm range",
-		.min_uV = 850000,
+		.min_uV = 800000,
 		.max_uV = 1350000,
 		.always_on = 1,
 		.boot_on = 1,
@@ -2218,8 +2302,8 @@ static struct regulator_init_data max77686_buck2_data = {
 static struct regulator_init_data max77686_buck3_data = {
 	.constraints = {
 		.name = "vdd_int range",
-		.min_uV = 850000,
-		.max_uV = 1037500,
+		.min_uV = 800000,
+		.max_uV = 1150000,
 		.always_on = 1,
 		.boot_on = 1,
 		.valid_ops_mask = REGULATOR_CHANGE_VOLTAGE,
@@ -2244,7 +2328,7 @@ static struct regulator_init_data max77686_buck4_data = {
 	.consumer_supplies = &max77686_buck4,
 };
 
-static struct regulator_init_data __initdata max77686_ldo11_data = {
+static struct regulator_init_data max77686_ldo11_data = {
 	.constraints	= {
 		.name		= "vdd_ldo11 range",
 		.min_uV		= 1900000,
@@ -2259,7 +2343,7 @@ static struct regulator_init_data __initdata max77686_ldo11_data = {
 	.consumer_supplies	= &max77686_ldo11_consumer,
 };
 
-static struct regulator_init_data __initdata max77686_ldo14_data = {
+static struct regulator_init_data max77686_ldo14_data = {
 	.constraints	= {
 		.name		= "vdd_ldo14 range",
 		.min_uV		= 1900000,
@@ -2353,8 +2437,8 @@ static struct regulator_consumer_supply s5m8767_buck4_consumer =
 static struct regulator_init_data s5m8767_buck1_data = {
 	.constraints	= {
 		.name		= "vdd_mif range",
-		.min_uV		= 850000,
-		.max_uV		= 1050000,
+		.min_uV		= 800000,
+		.max_uV		= 1100000,
 		.valid_ops_mask	= REGULATOR_CHANGE_VOLTAGE |
 				  REGULATOR_CHANGE_STATUS,
 		.state_mem	= {
@@ -2368,7 +2452,7 @@ static struct regulator_init_data s5m8767_buck1_data = {
 static struct regulator_init_data s5m8767_buck2_data = {
 	.constraints	= {
 		.name		= "vdd_arm range",
-		.min_uV		=  850000,
+		.min_uV		=  800000,
 		.max_uV		= 1350000,
 		.valid_ops_mask	= REGULATOR_CHANGE_VOLTAGE |
 				  REGULATOR_CHANGE_STATUS,
@@ -2383,8 +2467,8 @@ static struct regulator_init_data s5m8767_buck2_data = {
 static struct regulator_init_data s5m8767_buck3_data = {
 	.constraints	= {
 		.name		= "vdd_int range",
-		.min_uV		=  850000,
-		.max_uV		= 1037500,
+		.min_uV		=  800000,
+		.max_uV		= 1150000,
 		.apply_uV	= 1,
 		.valid_ops_mask	= REGULATOR_CHANGE_VOLTAGE |
 				REGULATOR_CHANGE_STATUS,
@@ -2462,7 +2546,7 @@ static struct s5m_platform_data exynos4_s5m8767_pdata = {
 	.buck_gpios[1]		= EXYNOS4_GPX2(4),
 	.buck_gpios[2]		= EXYNOS4_GPX2(5),
 
-	.buck_ramp_delay        = 10,
+	.buck_ramp_delay        = 25,
 	.buck2_ramp_enable      = true,
 	.buck3_ramp_enable      = true,
 	.buck4_ramp_enable      = true,
@@ -3469,13 +3553,6 @@ static void __init exynos4_reserve_mem(void)
 			.start = 0
 		},
 #endif
-#ifdef CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC1
-		{
-			.name = "fimc1",
-			.size = CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC1 * SZ_1K,
-			.start = 0
-		},
-#endif
 #ifdef CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC2
 		{
 			.name = "fimc2",
@@ -3483,11 +3560,25 @@ static void __init exynos4_reserve_mem(void)
 			.start = 0
 		},
 #endif
-#if !defined(CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION) && \
+#if !defined(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION) && \
 	defined(CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC3)
 		{
 			.name = "fimc3",
 			.size = CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC3 * SZ_1K,
+		},
+#endif
+#ifdef CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC1
+		{
+			.name = "fimc1",
+			.size = CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC1 * SZ_1K,
+			.start = 0
+		},
+#endif
+#ifdef CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC_NORMAL
+		{
+			.name = "mfc-normal",
+			.size = CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC_NORMAL * SZ_1K,
+			{ .alignment = 1 << 17 },
 		},
 #endif
 #ifdef CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC1
@@ -3500,8 +3591,7 @@ static void __init exynos4_reserve_mem(void)
 			.start = 0,
 		},
 #endif
-#if !defined(CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION) && \
-	defined(CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC0)
+#ifdef CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC0
 		{
 			.name = "mfc0",
 			.size = CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC0 * SZ_1K,
@@ -3537,7 +3627,7 @@ static void __init exynos4_reserve_mem(void)
 		},
 #endif
 #endif
-#if !defined(CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION) && \
+#if !defined(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION) && \
 	defined(CONFIG_VIDEO_SAMSUNG_S5P_MFC)
 		{
 			.name		= "b2",
@@ -3555,11 +3645,20 @@ static void __init exynos4_reserve_mem(void)
 			{ .alignment	= 128 << 10 },
 		},
 #endif
+#else /* !CONFIG_VIDEOBUF2_ION */
+#ifdef CONFIG_FB_S5P
+#error CONFIG_FB_S5P is defined. Select CONFIG_FB_S3C, instead
+#endif
+		{
+			.name	= "ion",
+			.size	= CONFIG_ION_EXYNOS_CONTIGHEAP_SIZE * SZ_1K,
+		},
+#endif /* !CONFIG_VIDEOBUF2_ION */
 		{
 			.size = 0
 		},
 	};
-#ifdef CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION
+#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
 	static struct cma_region regions_secure[] = {
 #ifdef CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC3
 		{
@@ -3573,10 +3672,10 @@ static void __init exynos4_reserve_mem(void)
 			.size = CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMD_VIDEO * SZ_1K,
 		},
 #endif
-#ifdef CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC0
+#ifdef CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC_SECURE
 		{
-			.name = "mfc0",
-			.size = CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC0 * SZ_1K,
+			.name = "mfc-secure",
+			.size = CONFIG_VIDEO_SAMSUNG_MEMSIZE_MFC_SECURE * SZ_1K,
 		},
 #endif
 		{
@@ -3587,7 +3686,7 @@ static void __init exynos4_reserve_mem(void)
 			.size = 0
 		},
 	};
-#else /* !CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION */
+#else /* !CONFIG_EXYNOS_CONTENT_PATH_PROTECTION */
 	struct cma_region *regions_secure = NULL;
 #endif
 	static const char map[] __initconst =
@@ -3595,7 +3694,7 @@ static void __init exynos4_reserve_mem(void)
 		"samsung-c2c=c2c_shdmem;"
 #endif
 		"s3cfb.0/fimd=fimd;exynos4-fb.0/fimd=fimd;"
-#ifdef CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION
+#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
 		"s3cfb.0/video=video;exynos4-fb.0/video=video;"
 #endif
 		"s3c-fimc.0=fimc0;s3c-fimc.1=fimc1;s3c-fimc.2=fimc2;s3c-fimc.3=fimc3;"
@@ -3616,18 +3715,17 @@ static void __init exynos4_reserve_mem(void)
 #endif
 		"s5p-mixer=tv;"
 		"s5p-fimg2d=fimg2d;"
-#ifdef CONFIG_ION_EXYNOS
-		"ion-exynos=fimc2;"
-#endif
-#ifdef CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION
+		"ion-exynos=ion,fimd,fimc0,fimc1,fimc2,fimc3,mfc,mfc0,mfc1,fw,b1,b2;"
+#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
 		"s5p-smem/video=video;"
 		"s5p-smem/sectbl=sectbl;"
 #endif
 		"s5p-smem/mfc=mfc0;"
 		"s5p-smem/fimc=fimc3;"
-		"s5p-smem/mfc-shm=mfc1;";
+		"s5p-smem/mfc-shm=mfc1,mfc-normal;"
+		"s5p-smem/fimd=fimd;";
 
-	s5p_cma_region_reserve(regions, regions_secure, SZ_64M, map);
+	s5p_cma_region_reserve(regions, regions_secure, 0, map);
 }
 #else
 static inline void exynos4_reserve_mem(void)
@@ -3805,7 +3903,7 @@ static int get_samsung_board_rev(void)
 	if (unlikely(!adc_regs))
 		goto err_clk;
 
-	writel(S5PV210_ADCCON_SELMUX(3), adc_regs + S5PV210_ADCMUX);
+	writel(S5PV210_ADCCON_SELMUX(3), adc_regs + S5P_ADCMUX);
 
 	con = readl(adc_regs + S3C2410_ADCCON);
 	con &= ~S3C2410_ADCCON_MUXMASK;
@@ -3936,7 +4034,7 @@ static void __init smdk4x12_machine_init(void)
 	samsung_bl_set(&smdk4x12_bl_gpio_info, &smdk4x12_bl_data);
 
 #ifdef CONFIG_EXYNOS4_DEV_DWMCI
-	exynos_dwmci_set_platdata(&exynos_dwmci_pdata);
+	exynos_dwmci_set_platdata(&exynos_dwmci_pdata, 0);
 #endif
 
 #ifdef CONFIG_VIDEO_EXYNOS_FIMC_IS
@@ -4001,7 +4099,7 @@ static void __init smdk4x12_machine_init(void)
 	s3c_device_fimc1.dev.parent = &exynos4_device_pd[PD_CAM].dev;
 	s3c_device_fimc2.dev.parent = &exynos4_device_pd[PD_CAM].dev;
 	s3c_device_fimc3.dev.parent = &exynos4_device_pd[PD_CAM].dev;
-#ifdef CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION
+#ifdef CONFIG_EXYNOS_CONTENT_PATH_PROTECTION
 	secmem.parent = &exynos4_device_pd[PD_CAM].dev;
 #endif
 #endif
@@ -4246,6 +4344,7 @@ static void __init smdk4x12_machine_init(void)
 	ppmu_init(&exynos_ppmu[PPMU_DMC1], &exynos4_busfreq.dev);
 	ppmu_init(&exynos_ppmu[PPMU_CPU], &exynos4_busfreq.dev);
 #endif
+	register_reboot_notifier(&exynos4_reboot_notifier);
 }
 
 #ifdef CONFIG_EXYNOS_C2C

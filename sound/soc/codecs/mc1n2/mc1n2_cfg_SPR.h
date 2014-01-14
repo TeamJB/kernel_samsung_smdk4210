@@ -654,7 +654,7 @@ static const MCDRV_DNG_INFO stDngInfo_Default = {
 	/* bOnOff[] : Digital Noise Gate On/Off Setting */
 	/*     MCDRV_DNG_OFF(0)  : OFF                */
 	/*     MCDRV_DNG_ON (1)  : ON                 */
-	{MCDRV_DNG_OFF,  MCDRV_DNG_OFF,  MCDRV_DNG_OFF},
+	{MCDRV_DNG_OFF, MCDRV_DNG_OFF, MCDRV_DNG_OFF},
 
 	/* bThreshold[] : Threshold Setting    */
 	/*     MCDRV_DNG_THRES_30    (0) */
@@ -667,26 +667,26 @@ static const MCDRV_DNG_INFO stDngInfo_Default = {
 	/*     MCDRV_DNG_THRES_72    (7) */
 	/*     MCDRV_DNG_THRES_78    (8) */
 	/*     MCDRV_DNG_THRES_84    (9) */
-	{MCDRV_DNG_THRES_60,  MCDRV_DNG_THRES_60,  MCDRV_DNG_THRES_60},
+	{MCDRV_DNG_THRES_60, MCDRV_DNG_THRES_60, MCDRV_DNG_THRES_60},
 
 	/* bHold[] : Hold Time Setting         */
 	/*     MCDRV_DNG_HOLD_30 (0)  :  30ms */
 	/*     MCDRV_DNG_HOLD_120(1)  : 120ms */
 	/*     MCDRV_DNG_HOLD_500(2)  : 500ms */
-	{MCDRV_DNG_HOLD_500,  MCDRV_DNG_HOLD_500,  MCDRV_DNG_HOLD_500},
+	{MCDRV_DNG_HOLD_500, MCDRV_DNG_HOLD_500, MCDRV_DNG_HOLD_500},
 
 	/* bAttack[] : Attack Time Setting        */
 	/*     MCDRV_DNG_ATTACK_25   (0)  :   25ms */
 	/*     MCDRV_DNG_ATTACK_100  (1)  :  100ms */
 	/*     MCDRV_DNG_ATTACK_400  (2)  :  400ms */
 	/*     MCDRV_DNG_ATTACK_800  (3)  :  800ms */
-	{MCDRV_DNG_ATTACK_100,  MCDRV_DNG_ATTACK_100,  MCDRV_DNG_ATTACK_100},
+	{MCDRV_DNG_ATTACK_100, MCDRV_DNG_ATTACK_100, MCDRV_DNG_ATTACK_100},
 
 	/* bRelease[] : Release Time Setting        */
 	/*     MCDRV_DNG_RELEASE_7950(0)  : 7.95ms */
 	/*     MCDRV_DNG_RELEASE_470 (1)  : 0.47ms */
 	/*     MCDRV_DNG_RELEASE_940 (2)  : 0.94ms */
-	{MCDRV_DNG_RELEASE_940,  MCDRV_DNG_RELEASE_940,  MCDRV_DNG_RELEASE_940},
+	{MCDRV_DNG_RELEASE_940, MCDRV_DNG_RELEASE_940, MCDRV_DNG_RELEASE_940},
 
 	/* bTarget[] : Target Volume Setting        */
 	/*     MCDRV_DNG_TARGET_6    (0)  : -6dB  */
@@ -695,7 +695,7 @@ static const MCDRV_DNG_INFO stDngInfo_Default = {
 	/*     MCDRV_DNG_TARGET_15   (3)  : -15dB */
 	/*     MCDRV_DNG_TARGET_18   (4)  : -18dB */
 	/*     MCDRV_DNG_TARGET_MUTE (5)  : Mute  */
-	{MCDRV_DNG_TARGET_MUTE,  MCDRV_DNG_TARGET_MUTE,  MCDRV_DNG_TARGET_MUTE},
+	{MCDRV_DNG_TARGET_MUTE, MCDRV_DNG_TARGET_MUTE, MCDRV_DNG_TARGET_MUTE},
 };
 #if 0
 static const MCDRV_DNG_INFO stDngInfo_Default = {

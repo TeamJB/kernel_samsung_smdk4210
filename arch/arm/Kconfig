@@ -4,6 +4,7 @@ config ARM
 	select HAVE_AOUT
 	select HAVE_DMA_API_DEBUG
 	select HAVE_IDE
+	select HAVE_DMA_CONTIGUOUS if (CPU_V6 || CPU_V6K || CPU_V7)
 	select HAVE_MEMBLOCK
 	select RTC_LIB
 	select SYS_SUPPORTS_APM_EMULATION
@@ -36,6 +37,9 @@ config ARM
 	  manufactured, but legacy ARM-based PC hardware remains popular in
 	  Europe.  There is an ARM Linux project with a web page at
 	  <http://www.arm.linux.org.uk/>.
+
+config ARM_HAS_SG_CHAIN
+	bool
 
 config HAVE_PWM
 	bool
@@ -110,7 +114,6 @@ config STACKTRACE_SUPPORT
 
 config HAVE_LATENCYTOP_SUPPORT
 	bool
-	depends on !SMP
 	default y
 
 config LOCKDEP_SUPPORT
@@ -212,6 +215,9 @@ config ARM_PATCH_PHYS_VIRT_16BIT
 	  This option extends the physical to virtual translation patching
 	  to allow physical memory down to a theoretical minimum of 64K
 	  boundaries.
+
+config ARCH_HIBERNATION_POSSIBLE
+	def_bool y
 
 source "init/Kconfig"
 
@@ -1367,13 +1373,6 @@ config PL310_ERRATA_769419
 
 endmenu
 
-menu "Samsung Kernel Debug Features"
-
-config KERNEL_DEBUG_SEC
-        bool "KERNEL_DEBUG_SEC"
-
-endmenu
-
 menu "Kernel Features"
 
 source "kernel/time/Kconfig"
@@ -1483,7 +1482,8 @@ source kernel/Kconfig.preempt
 config HZ
 	int
 	default 200 if ARCH_EBSA110 || ARCH_S3C2410 || ARCH_S5P64X0 || \
-		ARCH_S5PV210 || ARCH_EXYNOS
+		ARCH_S5PV210 || (ARCH_EXYNOS && !MACH_FPGA5410)
+	default 20 if MACH_FPGA5410
 	default OMAP_32K_TIMER_HZ if ARCH_OMAP && OMAP_32K_TIMER
 	default AT91_TIMER_HZ if ARCH_AT91
 	default SHMOBILE_TIMER_HZ if ARCH_SHMOBILE
@@ -1627,7 +1627,6 @@ config FORCE_MAX_ZONEORDER
 	int "Maximum zone order" if ARCH_SHMOBILE
 	range 11 64 if ARCH_SHMOBILE
 	default "9" if SA1111
-	default "12" if ARCH_EXYNOS
 	default "11"
 	help
 	  The kernel memory allocator divides physically contiguous memory
@@ -1764,6 +1763,8 @@ config ARM_FLUSH_CONSOLE_ON_RESTART
 	  console drivers. This option forces the console lock to be
 	  released if it failed to be acquired, which will cause all the
 	  pending messages to be flushed.
+
+source "arch/arm/mvp/Kconfig"
 
 endmenu
 

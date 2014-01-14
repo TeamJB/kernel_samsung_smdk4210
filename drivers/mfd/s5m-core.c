@@ -19,6 +19,7 @@
 #include <linux/interrupt.h>
 #include <linux/pm_runtime.h>
 #include <linux/mutex.h>
+#include <linux/gpio.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/s5m87xx/s5m-core.h>
 #include <linux/mfd/s5m87xx/s5m-pmic.h>
@@ -124,7 +125,7 @@ static int s5m87xx_i2c_probe(struct i2c_client *i2c,
 	i2c_set_clientdata(i2c, s5m87xx);
 	s5m87xx->dev = &i2c->dev;
 	s5m87xx->i2c = i2c;
-	s5m87xx->irq = i2c->irq;
+	s5m87xx->irq = gpio_to_irq(pdata->irq_gpio);
 	s5m87xx->type = id->driver_data;
 
 	if (pdata) {
@@ -132,7 +133,6 @@ static int s5m87xx_i2c_probe(struct i2c_client *i2c,
 		s5m87xx->ono = pdata->ono;
 		s5m87xx->irq_base = pdata->irq_base;
 		s5m87xx->wakeup = pdata->wakeup;
-		s5m87xx->wtsr_smpl = pdata->wtsr_smpl;
 	}
 
 	mutex_init(&s5m87xx->iolock);
@@ -140,7 +140,7 @@ static int s5m87xx_i2c_probe(struct i2c_client *i2c,
 	s5m87xx->rtc = i2c_new_dummy(i2c->adapter, RTC_I2C_ADDR);
 	i2c_set_clientdata(s5m87xx->rtc, s5m87xx);
 
-	if (pdata->cfg_pmic_irq)
+	if (pdata && pdata->cfg_pmic_irq)
 		pdata->cfg_pmic_irq();
 
 	s5m_irq_init(s5m87xx);

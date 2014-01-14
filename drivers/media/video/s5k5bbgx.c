@@ -18,7 +18,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
 #ifdef CONFIG_VIDEO_SAMSUNG_V4L2
-#include <linux/videodev2_samsung.h>
+#include <linux/videodev2_exynos_camera.h>
 #endif
 #include <media/s5k5bbgx_platform.h>
 
@@ -37,7 +37,7 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 struct test {
 	u8 data;
@@ -59,7 +59,6 @@ static s32 large_file;
 			}
 #define NELEMS(array) (sizeof(array) / sizeof(array[0]))
 
-extern struct class *camera_class;
 #ifdef S5K5BBGX_USLEEP
 /*
  * Use msleep() if the sleep time is over 1000 us.
@@ -134,7 +133,8 @@ static int loadFile(void)
 
 	BUG_ON(testBuf);
 
-	fp = filp_open("/mnt/sdcard/external_sd/s5k5bbgx_setfile.h", O_RDONLY, 0);
+	fp = filp_open("/mnt/sdcard/external_sd/s5k5bbgx_setfile.h",
+			O_RDONLY, 0);
 	if (IS_ERR(fp)) {
 		cam_err("file open error\n");
 		return PTR_ERR(fp);
@@ -159,13 +159,13 @@ static int loadFile(void)
 
 	testBuf_size = sizeof(struct test) * file_size;
 	if (tmp_large_file) {
-		testBuf = (struct test *)vmalloc(testBuf_size);
+		testBuf = vmalloc(testBuf_size);
 		large_file = 1;
 	} else {
 		testBuf = kmalloc(testBuf_size, GFP_ATOMIC);
 		if (testBuf == NULL) {
 			cam_dbg("Fail to get mem(%d bytes)\n", testBuf_size);
-			testBuf = (struct test *)vmalloc(testBuf_size);
+			testBuf = vmalloc(testBuf_size);
 			large_file = 1;
 		}
 	}
@@ -190,12 +190,13 @@ static int loadFile(void)
 
 	i = max_size;
 
-	printk("i = %d\n", i);
+	printk(KERN_INFO "i = %d\n", i);
 
 	while (i) {
 		testBuf[max_size - i].data = *nBuf;
 		if (i != 1) {
-			testBuf[max_size - i].nextBuf = &testBuf[max_size - i + 1];
+			testBuf[max_size - i].nextBuf =
+				&testBuf[max_size - i + 1];
 		} else {
 			testBuf[max_size - i].nextBuf = NULL;
 			break;
@@ -216,8 +217,10 @@ static int loadFile(void)
 								== '/') {
 						check = 1;/* when find '//' */
 						i--;
-					} else if (testBuf[max_size-i].nextBuf->data == '*') {
-						starCheck = 1;/* when find '/ *' */
+					} else if (
+				testBuf[max_size-i].nextBuf->data == '*') {
+						starCheck = 1;
+						/* when find '/ *' */
 						i--;
 					}
 				} else
@@ -232,9 +235,11 @@ static int loadFile(void)
 			}
 		} else if (check && !starCheck) {
 			if (testBuf[max_size - i].data == '/') {
-				if(testBuf[max_size-i].nextBuf != NULL) {
-					if (testBuf[max_size-i].nextBuf->data == '*') {
-						starCheck = 1; /* when find '/ *' */
+				if (testBuf[max_size-i].nextBuf != NULL) {
+					if (
+				testBuf[max_size-i].nextBuf->data == '*') {
+						starCheck = 1;
+						/* when find '/ *' */
 						check = 0;
 						i--;
 					}
@@ -252,8 +257,10 @@ static int loadFile(void)
 		} else if (!check && starCheck) {
 			if (testBuf[max_size - i].data == '*') {
 				if (testBuf[max_size-i].nextBuf != NULL) {
-					if (testBuf[max_size-i].nextBuf->data == '/') {
-						starCheck = 0; /* when find '* /' */
+					if (
+				testBuf[max_size-i].nextBuf->data == '/') {
+						starCheck = 0;
+						/* when find '* /' */
 						i--;
 					}
 				} else
@@ -275,21 +282,21 @@ static int loadFile(void)
 	}
 #endif
 
-#if 0 // for print
-	printk("i = %d\n", i);
+#if 0 /* for print */
+	printk(KERN_INFO "i = %d\n", i);
 	nextBuf = &testBuf[0];
 	while (1) {
-		//printk("sdfdsf\n");
+		/* printk("sdfdsf\n"); */
 		if (nextBuf->nextBuf == NULL)
 			break;
-		printk("%c", nextBuf->data);
+		printk(KERN_INFO "%c", nextBuf->data);
 		nextBuf = nextBuf->nextBuf;
 	}
 #endif
 
 error_out:
 
-	if (nBuf)
+/*	if (nBuf)*/
 		tmp_large_file ? vfree(nBuf) : kfree(nBuf);
 	if (fp)
 		filp_close(fp, current->files);
@@ -380,7 +387,9 @@ static int s5k5bbgx_write_regs_from_sd(struct v4l2_subdev *sd, u8 s_name[])
 					tempData = tempData->nextBuf;
 				}
 				/*cam_dbg("%s\n", data);*/
-				temp = simple_strtoul(data, NULL, 16);
+				temp = kstrtol(data, NULL, 16);
+				/*patch error: kstrtol is
+				* substitute for simple_strtol*/
 				break;
 			} else if (tempData->data == '}') {
 				searched = 1;
@@ -450,7 +459,7 @@ static int s5k5bbgx_read_reg(struct v4l2_subdev *sd,
 #ifdef S5K5BBGX_BURST_MODE
 	static u16 addr, value;
 
-	static int len = 0;
+	static int len;
 	static u8 buf[SZ_2K] = {0,};
 #else
 	static u8 buf[4] = {0,};
@@ -532,7 +541,8 @@ s5k5bbgx_burst_write:
 			}
 
 		if (unlikely(ret < 0)) {
-			cam_err("ERR - 0x%08x write failed err=%d\n", (u32)packet, ret);
+			cam_err("ERR - 0x%08x write failed err=%d\n",
+				(u32)packet, ret);
 			break;
 		}
 
@@ -564,7 +574,7 @@ static int s5k5bbgx_get_exif(struct v4l2_subdev *sd)
 
 	/* Get shutter speed */
 	s5k5bbgx_read_reg(sd, REG_PAGE_SHUTTER, REG_ADDR_SHUTTER, &val);
-	state->exif.shutter_speed = 1000*1000 / (val *1000/ 400);
+	state->exif.shutter_speed = 1000 * 1000 / (val * 1000 / 400);
 	cam_dbg("val = %d\n", val);
 
 	/* Get ISO */
@@ -629,7 +639,7 @@ static int s5k5bbgx_debug_sensor_status(struct v4l2_subdev *sd)
 	err = s5k5bbgx_read_reg(sd, 0x7000, 0x01F6, &val);
 	CHECK_ERR(err);
 
-	switch(val) {
+	switch (val) {
 	case 0:
 		cam_info("In normal mode(0)\n");
 		break;
@@ -734,7 +744,8 @@ static int s5k5bbgx_set_capture_start(struct v4l2_subdev *sd)
 	cam_info("Capture ConfigSync\n");
 	do {
 		msleep(20);
-		err = s5k5bbgx_read_reg(sd, REG_PAGE_CAPTURE_STATUS, REG_ADDR_CAPTURE_STATUS, &val);
+		err = s5k5bbgx_read_reg(sd, REG_PAGE_CAPTURE_STATUS,
+					REG_ADDR_CAPTURE_STATUS, &val);
 		CHECK_ERR(err);
 		cam_dbg("val = %d\n", val);
 		if (val == 0)
@@ -798,7 +809,8 @@ static int s5k5bbgx_enum_framesizes(struct v4l2_subdev *sd, \
 }
 
 #if (0) /* not used */
-static int s5k5bbgx_enum_fmt(struct v4l2_subdev *sd, struct v4l2_fmtdesc *fmtdesc)
+static int s5k5bbgx_enum_fmt(struct v4l2_subdev *sd,
+			struct v4l2_fmtdesc *fmtdesc)
 {
 	int err = 0;
 
@@ -825,7 +837,8 @@ static int s5k5bbgx_try_fmt(struct v4l2_subdev *sd, struct v4l2_format *fmt)
 	return err;
 }
 
-static int s5k5bbgx_s_fmt(struct v4l2_subdev *sd, struct v4l2_mbus_framefmt *ffmt)
+static int s5k5bbgx_s_fmt(struct v4l2_subdev *sd,
+			struct v4l2_mbus_framefmt *ffmt)
 {
 	struct s5k5bbgx_state *state = to_state(sd);
 	u32 *width = NULL, *height = NULL;
@@ -948,7 +961,8 @@ static int s5k5bbgx_set_frame_rate(struct v4l2_subdev *sd, u32 fps)
 	return err;
 }
 
-static int s5k5bbgx_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
+static int s5k5bbgx_g_parm(struct v4l2_subdev *sd,
+			struct v4l2_streamparm *parms)
 {
 	int err = 0;
 
@@ -957,7 +971,8 @@ static int s5k5bbgx_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms
 	return err;
 }
 
-static int s5k5bbgx_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
+static int s5k5bbgx_s_parm(struct v4l2_subdev *sd,
+			struct v4l2_streamparm *parms)
 {
 	int err = 0;
 	u32 fps = 0;
@@ -1001,21 +1016,23 @@ static int s5k5bbgx_set_60hz_antibanding(struct v4l2_subdev *sd)
 	u32 s5k5bbgx_antibanding60hz[] = {
 	0xFCFCD000,
 	0x00287000,
-	// Anti-Flicker //
-	// End user init script
+	/* Anti-Flicker */
+	/* End user init script*/
 	0x002A0400,
-	0x0F12005F,  //REG_TC_DBG_AutoAlgEnBits //Auto Anti-Flicker is enabled bit[5] = 1.
+	0x0F12005F,  /*REG_TC_DBG_AutoAlgEnBits Auto
+			Anti-Flicker is enabled bit[5] = 1.*/
 	0x002A03DC,
-	0x0F120002,  //02 REG_SF_USER_FlickerQuant //Set flicker quantization(0: no AFC, 1: 50Hz, 2: 60 Hz)
+	0x0F120002,  /*02 REG_SF_USER_FlickerQuant set
+			flicker quantization(0: no AFC, 1: 50Hz, 2: 60 Hz)*/
 	0x0F120001,
 	};
 
 	err = s5k5bbgx_write_regs(sd, s5k5bbgx_antibanding60hz,
-					sizeof(s5k5bbgx_antibanding60hz) / sizeof(s5k5bbgx_antibanding60hz[0]));
-	printk("%s:  setting 60hz antibanding \n", __func__);
-	if (unlikely(err))
-	{
-		printk("%s: failed to set 60hz antibanding \n", __func__);
+	sizeof(s5k5bbgx_antibanding60hz) / sizeof(s5k5bbgx_antibanding60hz[0]));
+	printk(KERN_INFO "%s:  setting 60hz antibanding\n", __func__);
+	if (unlikely(err)) {
+		printk(KERN_INFO "%s: failed to set 60hz antibanding\n",
+			__func__);
 		return err;
 	}
 
@@ -1023,7 +1040,8 @@ static int s5k5bbgx_set_60hz_antibanding(struct v4l2_subdev *sd)
 }
 #endif
 
-static int s5k5bbgx_control_stream(struct v4l2_subdev *sd, stream_cmd_t cmd)
+static int s5k5bbgx_control_stream(struct v4l2_subdev *sd,
+				enum stream_cmd_t cmd)
 {
 	int err = 0;
 
@@ -1101,12 +1119,14 @@ static int s5k5bbgx_init(struct v4l2_subdev *sd, u32 val)
 			if (state->vt_mode == 1) {
 #endif
 				cam_info("load camera VT call setting\n");
-				err = s5k5bbgx_write_regs(sd, s5k5bbgx_vt_common,
+				err = s5k5bbgx_write_regs(sd,
+					s5k5bbgx_vt_common,
 					sizeof(s5k5bbgx_vt_common) / \
 					sizeof(s5k5bbgx_vt_common[0]));
 			} else {
 				cam_info("load camera WIFI VT call setting\n");
-				err = s5k5bbgx_write_regs(sd, s5k5bbgx_vt_wifi_common,
+				err = s5k5bbgx_write_regs(sd,
+					s5k5bbgx_vt_wifi_common,
 					sizeof(s5k5bbgx_vt_wifi_common) / \
 					sizeof(s5k5bbgx_vt_wifi_common[0]));
 			}
@@ -1229,7 +1249,8 @@ static int s5k5bbgx_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 	return err;
 }
 
-static int s5k5bbgx_set_brightness(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
+static int s5k5bbgx_set_brightness(struct v4l2_subdev *sd,
+				struct v4l2_control *ctrl)
 {
 	struct s5k5bbgx_state *state = to_state(sd);
 	int err = -EINVAL;
@@ -1425,25 +1446,31 @@ static int s5k5bbgx_check_dataline_stop(struct v4l2_subdev *sd)
 	struct s5k5bbgx_state *state = to_state(sd);
 	int err = -EINVAL;
 
-	extern int s5k5bbgx_power_reset(void);
-
 	cam_warn("Warning: do nothing!!\n");
 	return err;
 
 
-	//s5k5bbgx_write(client, 0xFCFCD000);
-	//s5k5bbgx_write(client, 0x0028D000);
-	//s5k5bbgx_write(client, 0x002A3100);
-	//s5k5bbgx_write(client, 0x0F120000);
+	/*s5k5bbgx_write(client, 0xFCFCD000); */
+	/*s5k5bbgx_write(client, 0x0028D000); */
+	/*s5k5bbgx_write(client, 0x002A3100); */
+	/*s5k5bbgx_write(client, 0x0F120000); */
 
-   //	err =  s5k5bbgx_write_regs(sd, s5k5bbgx_pattern_off,	sizeof(s5k5bbgx_pattern_off) / sizeof(s5k5bbgx_pattern_off[0]));
-	printk("%s: sensor reset\n", __func__);
-#if defined(CONFIG_TARGET_LOCALE_KOR) || defined(CONFIG_TARGET_LOCALE_EUR) || defined(CONFIG_TARGET_LOCALE_HKTW) || defined(CONFIG_TARGET_LOCALE_HKTW_FET) || defined(CONFIG_TARGET_LOCALE_USAGSM) || defined(CONFIG_TARGET_LOCALE_CANBMC_TEMP)
-        // dont't know where this code came from - comment out for compile error
-        // s5k5bbgx_power_reset();
+	/*err =  s5k5bbgx_write_regs(sd, s5k5bbgx_pattern_off,
+	* sizeof(s5k5bbgx_pattern_off) / sizeof(s5k5bbgx_pattern_off[0])); */
+	printk(KERN_INFO "%s: sensor reset\n", __func__);
+#if defined(CONFIG_TARGET_LOCALE_KOR) || \
+	defined(CONFIG_TARGET_LOCALE_EUR) || \
+	defined(CONFIG_TARGET_LOCALE_HKTW) || \
+	defined(CONFIG_TARGET_LOCALE_HKTW_FET) || \
+	defined(CONFIG_TARGET_LOCALE_USAGSM) || \
+	defined(CONFIG_TARGET_LOCALE_CANBMC_TEMP)
+	/* dont't know where this code came from - comment out for
+	* compile error */
+	/* s5k5bbgx_power_reset();*/
  #endif
 	cam_dbg("load camera init setting\n");
-	err =  s5k5bbgx_write_regs(sd, s5k5bbgx_common,	sizeof(s5k5bbgx_common) / sizeof(s5k5bbgx_common[0]));
+	err =  s5k5bbgx_write_regs(sd, s5k5bbgx_common,
+		sizeof(s5k5bbgx_common) / sizeof(s5k5bbgx_common[0]));
 
 	state->check_dataline = 0;
 	/* mdelay(100); */
@@ -1487,7 +1514,7 @@ static int s5k5bbgx_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 		break;
 
 	case V4L2_CID_CAMERA_VGA_BLUR:
-		//err = s5k5bbgx_set_blur(sd, ctrl);
+		/*err = s5k5bbgx_set_blur(sd, ctrl);*/
 		cam_dbg("V4L2_CID_CAMERA_VGA_BLUR [%d]\n", ctrl->value);
 		break;
 
@@ -1591,7 +1618,7 @@ static int s5k5bbgx_probe(struct i2c_client *client,
 
 	sd = &state->sd;
 	strcpy(sd->name, S5K5BBGX_DRIVER_NAME);
-    state->initialized = 0;
+	state->initialized = 0;
 	state->req_fps = state->set_fps = 8;
 	state->sensor_mode = SENSOR_CAMERA;
 
@@ -1603,7 +1630,7 @@ static int s5k5bbgx_probe(struct i2c_client *client,
 	}
 	/* Registering subdev */
 	v4l2_i2c_subdev_init(sd, client, &s5k5bbgx_ops);
-    if (state->s5k5bbgx_dev == NULL) {
+	if (state->s5k5bbgx_dev == NULL) {
 		state->s5k5bbgx_dev =
 		    device_create(camera_class, NULL, 0, NULL,
 				  "front");
@@ -1669,11 +1696,11 @@ static int s5k5bbgx_remove(struct i2c_client *client)
 	kfree(to_state(sd));
 
 #ifdef CONFIG_LOAD_FILE
-	if (testBuf) {
+/*	if (testBuf) {*/
 		large_file ? vfree(testBuf) : kfree(testBuf);
 		large_file = 0;
 		testBuf = NULL;
-	}
+/*	}*/
 #endif
 
 	return 0;

@@ -14,15 +14,10 @@
 #include <linux/regulator/consumer.h>
 #include <plat/gpio-cfg.h>
 #include <linux/delay.h>
+#include <mach/naples-tsp.h>
 #ifdef CONFIG_TOUCHSCREEN_ATMEL_MXT224
 #include <linux/i2c/mxt224.h>
 #define TSP_IRQ_READY_DELAY 45
-/*-------------MXT224  TOUCH DRIVER by Xtopher----------*/
-static struct c1_charging_status_callbacks {
-	void	(*tsp_set_charging_cable) (int type);
-} charging_cbs;
-
-static bool is_cable_attached;
 /*-------------MXT224  TOUCH DRIVER by Xtopher----------*/
 
 #define MXT224_MAX_MT_FINGERS 10
@@ -178,26 +173,23 @@ static const u8 *mxt224_config[] = {
 	end_config,
 };
 
-void tsp_register_callback(void *function)
+struct mxt224_callbacks *charger_callbacks;
+void tsp_charger_infom(bool en)
 {
-	charging_cbs.tsp_set_charging_cable = function;
+	if (charger_callbacks && charger_callbacks->inform_charger)
+		charger_callbacks->inform_charger(charger_callbacks, en);
+	pr_debug("[TSP] %s - %s\n", __func__,
+		en ? "on" : "off");
+}
+
+void tsp_register_callback(struct mxt224_callbacks *cb)
+{
+	charger_callbacks = cb;
 }
 
 void tsp_read_ta_status(void *ta_status)
 {
 	*(bool *)ta_status = is_cable_attached;
-}
-
-void tsp_set_unknown_charging_cable(bool set)
-{
-	if (charging_cbs.tsp_set_charging_cable) {
-		pr_err("tsp_set_unknown_charging_cable %d\n", set);
-		if (set)
-			charging_cbs.tsp_set_charging_cable(1);
-		else
-			charging_cbs.tsp_set_charging_cable(0);
-	}
-	is_cable_attached =  set;
 }
 
 static int TSP_VDD_1_8V(int on)

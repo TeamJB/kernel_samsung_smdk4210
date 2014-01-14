@@ -12,7 +12,9 @@
  *	GNU General Public License for more details.
  *
 */
-
+#ifdef CONFIG_MPU_SENSORS_MPU3050
+#define FACTORY_TEST
+#endif
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -26,9 +28,9 @@
 #include <linux/completion.h>
 #include "ak8975-reg.h"
 
-#undef FACTORY_TEST
+#define VENDOR_NAME		"AKM"
+#define CHIP_NAME		"AK8975C"
 
-#undef MAGNETIC_LOGGING
 
 #define AK8975_REG_CNTL			0x0A
 #define REG_CNTL_MODE_SHIFT		0
@@ -648,6 +650,19 @@ static ssize_t ak8975_show_raw_data(struct device *dev,
 done:
 	return sprintf(buf, "%d,%d,%d\n", x, y, z);
 }
+static ssize_t get_vendor_name(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%s\n", VENDOR_NAME);
+}
+
+static ssize_t get_chip_name(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%s\n", CHIP_NAME);
+}
+static DEVICE_ATTR(vendor, S_IRUGO, get_vendor_name, NULL);
+static DEVICE_ATTR(name, S_IRUGO, get_chip_name, NULL);
 
 static DEVICE_ATTR(raw_data, 0664,
 		ak8975_show_raw_data, NULL);
@@ -674,12 +689,16 @@ static struct device_attribute *magnetic_sensor_attrs[] = {
 	&dev_attr_dac,
 	&dev_attr_status,
 	&dev_attr_adc,
+	&dev_attr_vendor,
+	&dev_attr_name,
 	NULL,
 };
 
 #else
 static struct device_attribute *magnetic_sensor_attrs[] = {
 	&dev_attr_raw_data,
+	&dev_attr_vendor,
+	&dev_attr_name,
 	NULL,
 };
 #endif
@@ -786,6 +805,7 @@ return 0;
 
 exit_class_create_failed:
 exit_i2c_failed:
+	misc_deregister(&akm->akmd_device);
 exit_akmd_device_register_failed:
 #if USING_IRQ
 	free_irq(akm->irq, akm);

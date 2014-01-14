@@ -24,8 +24,7 @@
 #define __LINUX_MFD_MAX8997_H
 
 #include <linux/regulator/machine.h>
-
-#if defined(CONFIG_MACH_Q1_BD)
+#if defined(CONFIG_MACH_Q1_BD)  || defined(CONFIG_MACH_U1_NA_USCC)
 #define MAX8997_SUPPORT_TORCH
 #endif /* CONFIG_MACH_Q1_BD */
 
@@ -125,6 +124,35 @@ enum {
 	UART_PATH_AP,
 };
 
+enum {
+	USB_SEL_IF = 0,
+	USB_SEL_CP,
+};
+
+enum muic_acc_type {
+	MUIC_ACC_TYPE_NONE = 0,
+	MUIC_ACC_TYPE_OTG,
+	MUIC_ACC_TYPE_MHL,
+	MUIC_ACC_TYPE_STATION,
+	MUIC_ACC_TYPE_JIG_USB_OFF,
+	MUIC_ACC_TYPE_JIG_USB_ON,
+	MUIC_ACC_TYPE_DESKDOCK,
+	MUIC_ACC_TYPE_JIG_UART_OFF,
+	MUIC_ACC_TYPE_JIG_UART_ON,
+	MUIC_ACC_TYPE_CARDOCK,
+	MUIC_ACC_TYPE_TA,
+	MUIC_ACC_TYPE_USB,
+	MUIC_ACC_TYPE_UNKNOWN
+};
+
+enum muic_chg_type {
+	MUIC_CHG_TYPE_NONE = 0,
+	MUIC_CHG_TYPE_USB,
+	MUIC_CHG_TYPE_TA,
+	MUIC_CHG_TYPE_MHL_VB,
+	MUIC_CHG_TYPE_UNKNOWN
+};
+
 enum cable_type {
 	CABLE_TYPE_NONE = 0,
 	CABLE_TYPE_USB,
@@ -156,12 +184,9 @@ struct max8997_muic_data {
 	int		(*cfg_uart_gpio) (void);
 	void		(*jig_uart_cb) (int path);
 	int		(*host_notify_cb) (int enable);
-#if defined(CONFIG_TARGET_LOCALE_NA)
-        int             gpio_uart_sel;
-#else
 	int		gpio_usb_sel;
-#endif /* CONFIG_TARGET_LOCALE_NA */
-	int		sw_path;
+	int		gpio_uart_sel;
+	int		usb_path;
 	int		uart_path;
 };
 
@@ -193,6 +218,7 @@ struct max8997_buck1_dvs_funcs {
  * @buck_ramp_en: enable BUCKx RAMP
  * @buck_ramp_delay: ramp delay(usec) BUCK RAMP register(0x15)
  * @flash_cntl_val: value of MAX8997_REG_FLASH_CNTL register
+ * @mr_debounce_time: manual reset debounce time (sec), (default 7sec)
  */
 struct max8997_platform_data {
 	struct max8997_regulator_data	*regulators;
@@ -211,6 +237,7 @@ struct max8997_platform_data {
 	bool				buck_ramp_en;
 	int				buck_ramp_delay;
 	int				flash_cntl_val;
+	int				mr_debounce_time;
 	struct max8997_power_data	*power;
 	struct max8997_muic_data	*muic;
 #ifdef CONFIG_VIBETONZ

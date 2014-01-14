@@ -218,7 +218,7 @@ static int ext_cd_cleanup_hsmmc##num(void (*notify_func)( \
  * that can't be told by SDHCI regs
  */
 
-void sdhci_s3c_force_presence_change(struct platform_device *pdev)
+void mmc_force_presence_change(struct platform_device *pdev)
 {
 	void (*notify_func)(struct platform_device *, int state) = NULL;
 	mutex_lock(&notify_lock);
@@ -232,7 +232,7 @@ void sdhci_s3c_force_presence_change(struct platform_device *pdev)
 		pr_warn("%s: called for device with no notifier\n", __func__);
 	mutex_unlock(&notify_lock);
 }
-EXPORT_SYMBOL_GPL(sdhci_s3c_force_presence_change);
+EXPORT_SYMBOL_GPL(mmc_force_presence_change);
 
 #ifdef CONFIG_S3C_DEV_HSMMC3
 static struct s3c_sdhci_platdata slp_midas_hsmmc3_pdata __initdata = {
@@ -1154,7 +1154,7 @@ static void __init exynos4_reserve_mem(void)
 			.start = 0
 		},
 #endif
-#if !defined(CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION) && \
+#if !defined(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION) && \
 	defined(CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC1)
 		{
 			.name = "fimc1",

@@ -28,6 +28,7 @@
 #include <linux/suspend.h>
 #include <linux/reboot.h>
 #include <linux/clk.h>
+#include <linux/pm_qos_params.h>
 
 #include <asm/mach-types.h>
 
@@ -69,6 +70,8 @@ const char *const cpufreq_lock_name[DVFS_LOCK_ID_END] = {
 	[DVFS_LOCK_ID_CAM] = "CAM",
 	[DVFS_LOCK_ID_PM] = "PM",
 	[DVFS_LOCK_ID_USER] = "USER",
+	[DVFS_LOCK_ID_LCD] = "LCD",
+	[DVFS_LOCK_ID_ROTATION_BOOSTER] = "ROTATION_BOOSTER",
 };
 
 static DEFINE_MUTEX(set_bus_freq_lock);
@@ -110,6 +113,59 @@ static struct busfreq_table exynos4_busfreq_table[] = {
 #endif
 	{0, 0, 0, 0, 0},
 };
+
+#ifdef CONFIG_BUSFREQ_QOS
+enum busfreq_qos_target {
+	BUS_QOS_0,
+	BUS_QOS_1,
+	BUS_QOS_MAX,
+};
+
+static enum busfreq_qos_target busfreq_qos = BUS_QOS_0;
+
+/*  GDL: [3] MFC_L, [2] G3D, [1] TV, [0] Image */
+/*  GDR: [5] MAUDIO, [4] MFC_R, [3] FSYS, [2] LCD1, [1] LCD0, [0] CAM */
+#if defined(CONFIG_BUSFREQ_QOS_NONE)
+static unsigned int exynos4_qos_value[BUS_QOS_MAX][LV_END][4] = {
+	{
+		{0x00, 0x00, 0x00, 0x00},
+		{0x00, 0x00, 0x00, 0x00},
+		{0x00, 0x00, 0x00, 0x00},
+	},
+	{
+		{0x00, 0x00, 0x00, 0x00},
+		{0x00, 0x00, 0x00, 0x00},
+		{0x00, 0x00, 0x00, 0x00},
+	}
+};
+#elif defined(CONFIG_BUSFREQ_QOS_1024X600)	/* For P2 */
+static unsigned int exynos4_qos_value[BUS_QOS_MAX][LV_END][4] = {
+	{
+		{0x00, 0x00, 0x00, 0x00},
+		{0x00, 0x00, 0x00, 0x00},
+		{0x06, 0x0b, 0x00, 0x00},
+	},
+	{
+		{0x00, 0x00, 0x00, 0x00},
+		{0x00, 0x00, 0x00, 0x00},
+		{0x06, 0x0b, 0x00, 0x00},
+	}
+};
+#elif defined(CONFIG_BUSFREQ_QOS_1280X800)	/* For Q1, P8 */
+static unsigned int exynos4_qos_value[BUS_QOS_MAX][LV_END][4] = {
+	{
+		{0x06, 0x03, 0x06, 0x2f},
+		{0x06, 0x03, 0x06, 0x2f},
+		{0x02, 0x0b, 0x00, 0x00},
+	},
+	{
+		{0x06, 0x0b, 0x00, 0x00},
+		{0x06, 0x0b, 0x00, 0x00},
+		{0x02, 0x0b, 0x00, 0x00},
+	}
+};
+#endif
+#endif
 
 #define ASV_GROUP	5
 static unsigned int exynos4_asv_volt[ASV_GROUP][LV_END] = {
@@ -192,12 +248,24 @@ static unsigned int clkdiv_ip_bus[LV_END][3] = {
 	{ 3, 5, 7 },
 };
 
+#ifdef CONFIG_BUSFREQ_QOS
+static void exynos4_set_qos(unsigned int index)
+{
+	/* printk(KERN_INFO "exynos4_set_qos level %d\n", index); */
+	__raw_writel(exynos4_qos_value[busfreq_qos][index][0], S5P_VA_GDL + 0x400);
+	__raw_writel(exynos4_qos_value[busfreq_qos][index][1], S5P_VA_GDL + 0x404);
+	__raw_writel(exynos4_qos_value[busfreq_qos][index][2], S5P_VA_GDR + 0x400);
+	__raw_writel(exynos4_qos_value[busfreq_qos][index][3], S5P_VA_GDR + 0x404);
+}
+#endif
+
 static void exynos4_set_busfreq(unsigned int div_index)
 {
 	unsigned int tmp, val;
 
 	sec_debug_aux_log(SEC_DEBUG_AUXLOG_CPU_BUS_CLOCK_CHANGE,
-			"%s: div_index=%d.", __func__, div_index);
+			"%s: div_index=%d(%ps)", __func__, div_index,
+			__builtin_return_address(0));
 
 	/* Change Divider - DMC0 */
 	tmp = exynos4_busfreq_table[div_index].clk_dmcdiv;
@@ -471,8 +539,12 @@ static int exynos4_busfreq_notifier_event(struct notifier_block *this,
 			regulator_set_voltage(int_regulator, voltage,
 					voltage);
 
-		if (p_idx != curr_idx)
+		if (p_idx != curr_idx) {
+#ifdef CONFIG_BUSFREQ_QOS
+			exynos4_set_qos(curr_idx);
+#endif
 			exynos4_set_busfreq(curr_idx);
+		}
 
 		if (p_idx < curr_idx)
 			regulator_set_voltage(int_regulator, voltage,
@@ -527,6 +599,22 @@ static struct notifier_block exynos4_busfreq_reboot_notifier = {
 	.notifier_call = exynos4_busfreq_reboot_notify,
 };
 
+#ifdef CONFIG_BUSFREQ_QOS
+static int exynos4_bus_qos_notify(struct notifier_block *nb,
+		unsigned long l, void *v)
+{
+	busfreq_qos = (int)l;
+	printk(KERN_INFO "exynos4_bus_qos_notify table %d\n", busfreq_qos);
+	exynos4_set_qos(curr_idx);
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block exynos4_busqos_notifier = {
+	.notifier_call = exynos4_bus_qos_notify,
+};
+#endif
+
 int exynos4_busfreq_lock(unsigned int nId,
 	enum busfreq_level_request busfreq_level)
 {
@@ -552,6 +640,9 @@ int exynos4_busfreq_lock(unsigned int nId,
 		g_busfreq_lock_level = busfreq_level;
 		/* get the voltage value */
 		int_volt = exynos4_busfreq_table[busfreq_level].volt;
+#ifdef CONFIG_BUSFREQ_QOS
+		exynos4_set_qos(curr_idx);
+#endif
 		regulator_set_voltage(int_regulator, int_volt,
 				int_volt);
 		exynos4_set_busfreq(busfreq_level);
@@ -864,6 +955,9 @@ static int __init busfreq_mon_init(void)
 	if (sysfs_create_file(cpufreq_global_kobject, &busfreq_level_attr.attr))
 		pr_err("Failed to create sysfs file(level)\n");
 #endif
+#ifdef CONFIG_BUSFREQ_QOS
+	pm_qos_add_notifier(PM_QOS_BUS_QOS, &exynos4_busqos_notifier);
+#endif
 
 	return 0;
 
@@ -871,9 +965,9 @@ err_pm:
 	cpufreq_unregister_notifier(&exynos4_busfreq_notifier,
 				CPUFREQ_TRANSITION_NOTIFIER);
 err_cpufreq:
+err_clk:
 	if (!IS_ERR(int_regulator))
 		regulator_put(int_regulator);
-err_clk:
 
 	return -ENODEV;
 }

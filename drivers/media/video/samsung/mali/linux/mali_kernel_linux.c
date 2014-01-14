@@ -32,6 +32,7 @@
 #include "mali_kernel_ioctl.h"
 #include "mali_ukk_wrappers.h"
 #include "mali_kernel_pm.h"
+#include "mali_linux_pm.h"
 
 #include "mali_kernel_sysfs.h"
 
@@ -166,7 +167,7 @@ MODULE_PARM_DESC(mali_gpu_vol, "Mali Current Voltage");
 extern int gpu_power_state;
 module_param(gpu_power_state, int, S_IRUSR | S_IRGRP | S_IROTH); /* r--r--r-- */
 MODULE_PARM_DESC(gpu_power_state, "Mali Power State");
-
+extern _mali_device_power_states mali_dvfs_device_state;
 
 static char mali_dev_name[] = "mali"; /* should be const, but the functions we call requires non-cost */
 
@@ -228,7 +229,7 @@ int mali_driver_init(void)
 	}
 
 	/* print build options */
-	//MALI_DEBUG_PRINT(2, ("%s\n", __malidrv_build_info()));
+	MALI_DEBUG_PRINT(2, ("%s\n", __malidrv_build_info()));
 
     return 0;
 }
@@ -420,6 +421,12 @@ static int mali_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
 		return -ENOTTY;
 	}
 
+	if (_MALI_DEVICE_SHUTDOWN == mali_dvfs_device_state)
+	{
+		MALI_DEBUG_PRINT(7, ("system is shutdown \n"));
+		return 0;
+	}
+
 	switch(cmd)
 	{
 		case MALI_IOC_GET_SYSTEM_INFO_SIZE:
@@ -558,6 +565,11 @@ static int mali_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
 		case MALI_IOC_VSYNC_EVENT_REPORT:
 			err = vsync_event_report_wrapper(session_data, (_mali_uk_vsync_event_report_s __user *)arg);
 			break;
+#if MALI_TRACEPOINTS_ENABLED
+		case MALI_IOC_TRANSFER_SW_COUNTERS:
+			err = transfer_sw_counters_wrapper(session_data, (_mali_uk_sw_counters_s __user *)arg);
+#endif
+			break;
 
 		default:
 			MALI_DEBUG_PRINT(2, ("No handler for ioctl 0x%08X 0x%08lX\n", cmd, arg));
@@ -574,3 +586,9 @@ module_exit(mali_driver_exit);
 MODULE_LICENSE(MALI_KERNEL_LINUX_LICENSE);
 MODULE_AUTHOR("ARM Ltd.");
 MODULE_VERSION(SVN_REV_STRING);
+
+#if MALI_TRACEPOINTS_ENABLED
+/* Create the trace points (otherwise we just get code to call a tracepoint) */
+#define CREATE_TRACE_POINTS
+#include "mali_linux_trace.h"
+#endif

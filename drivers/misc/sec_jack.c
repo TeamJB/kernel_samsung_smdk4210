@@ -33,21 +33,45 @@
 
 #include <plat/adc.h>
 
+#if defined(CONFIG_STMPE811_ADC)
+#define SEC_JACK_ADC_CH		4
+#else
 #define SEC_JACK_ADC_CH		3
+#endif
 #define SEC_JACK_SAMPLE_SIZE	5
 
 #define MAX_ZONE_LIMIT		10
 /* keep this value if you support double-pressed concept */
-#ifdef CONFIG_TARGET_LOCALE_KOR
+#if defined(CONFIG_TARGET_LOCALE_KOR)
 #define SEND_KEY_CHECK_TIME_MS	20		/* 20ms - GB VOC in KOR*/
+#elif defined(CONFIG_MACH_Q1_BD) || defined(CONFIG_MACH_P4NOTE)
+/* 27ms, total delay is approximately double more
+   because hrtimer is called twice by gpio input driver,
+   new sec spec total delay is 60ms +/-10ms */
+#define SEND_KEY_CHECK_TIME_MS	27
 #else
-#define SEND_KEY_CHECK_TIME_MS	40		/* 100ms */
+#define SEND_KEY_CHECK_TIME_MS	40		/* 40ms */
 #endif
 #define WAKE_LOCK_TIME		(HZ * 5)	/* 5 sec */
 #define EAR_CHECK_LOOP_CNT	10
 
+#if defined(CONFIG_MACH_PX) || defined(CONFIG_MACH_P4NOTE) \
+	|| defined(CONFIG_MACH_GC1)
+#define JACK_CLASS_NAME "audio"
+#define JACK_DEV_NAME "earjack"
+#else
+#define JACK_CLASS_NAME "jack"
+#define JACK_DEV_NAME "jack_selector"
+#endif
+
 static struct class *jack_class;
 static struct device *jack_dev;
+
+#ifdef CONFIG_JACK_RESELECTOR_SUPPORT
+#define JACK_RESELECTOR_NAME "jack_reselector"
+static struct device *jack_reselector;
+static bool recheck_jack;
+#endif
 
 struct sec_jack_info {
 	struct s3c_adc_client *padc;
@@ -125,7 +149,12 @@ static int sec_jack_get_adc_data(struct s3c_adc_client *padc)
 	int i;
 
 	for (i = 0; i < SEC_JACK_SAMPLE_SIZE; i++) {
+
+	#if defined(CONFIG_STMPE811_ADC)
+		adc_data = stmpe811_get_adc_data(SEC_JACK_ADC_CH);
+	#else
 		adc_data = s3c_adc_read(padc, SEC_JACK_ADC_CH);
+	#endif
 
 		if (adc_data < 0) {
 
@@ -293,6 +322,9 @@ static void determine_jack_type(struct sec_jack_info *hi)
 	int adc;
 	int i;
 	unsigned npolarity = !pdata->det_active_high;
+#ifdef CONFIG_JACK_RESELECTOR_SUPPORT
+	int reselector_zone = pdata->ear_reselector_zone;
+#endif
 
 	/* set mic bias to enable adc */
 	pdata->set_micbias_state(true);
@@ -300,7 +332,11 @@ static void determine_jack_type(struct sec_jack_info *hi)
 	while (gpio_get_value(pdata->det_gpio) ^ npolarity) {
 		adc = sec_jack_get_adc_data(hi->padc);
 
+#if defined(CONFIG_TARGET_LOCALE_KOR)
+		pr_info("%s: adc = %d\n", __func__, adc);
+#else
 		pr_debug("%s: adc = %d\n", __func__, adc);
+#endif
 
 		if (adc < 0)
 			break;
@@ -316,8 +352,19 @@ static void determine_jack_type(struct sec_jack_info *hi)
 		for (i = 0; i < size; i++) {
 			if (adc <= zones[i].adc_high) {
 				if (++count[i] > zones[i].check_count) {
+#ifdef CONFIG_JACK_RESELECTOR_SUPPORT
+					if ((recheck_jack == true) && (i > 2)
+						&& (reselector_zone < adc)) {
+						pr_info("%s : something wrong connection!\n",
+								__func__);
+						handle_jack_not_inserted(hi);
+
+						recheck_jack = false;
+						return;
+					}
+#endif
 					sec_jack_set_type(hi,
-						 zones[i].jack_type);
+						zones[i].jack_type);
 					return;
 				}
 				msleep(zones[i].delay_ms);
@@ -326,6 +373,9 @@ static void determine_jack_type(struct sec_jack_info *hi)
 		}
 	}
 
+#ifdef CONFIG_JACK_RESELECTOR_SUPPORT
+	recheck_jack = false;
+#endif
 	/* jack removed before detection complete */
 	pr_debug("%s : jack removed before detection complete\n", __func__);
 	handle_jack_not_inserted(hi);
@@ -400,8 +450,8 @@ void sec_jack_buttons_work(struct work_struct *work)
 		input_report_key(hi->input_dev, hi->pressed_code, 0);
 		switch_set_state(&switch_sendend, 0);
 		input_sync(hi->input_dev);
-		pr_info("%s: keycode=%d, is released\n", __func__,
-			hi->pressed_code);
+		pr_info("%s: earkey is released\n", __func__);
+		pr_debug("keycode=%d\n", hi->pressed_code);
 		return;
 	}
 
@@ -415,8 +465,9 @@ void sec_jack_buttons_work(struct work_struct *work)
 			input_report_key(hi->input_dev, btn_zones[i].code, 1);
 			switch_set_state(&switch_sendend, 1);
 			input_sync(hi->input_dev);
-			pr_info("%s: keycode=%d, is pressed\n", __func__,
-				btn_zones[i].code);
+			pr_info("%s: earkey is pressed (adc:%d)\n",
+					__func__, adc);
+			pr_debug("keycode=%d, is pressed\n", btn_zones[i].code);
 			return;
 		}
 
@@ -451,8 +502,91 @@ static ssize_t select_jack_store(struct device *dev,
 	return size;
 }
 
+#if defined(CONFIG_MACH_PX) || defined(CONFIG_MACH_P4NOTE) \
+	|| defined(CONFIG_MACH_GC1)
+static ssize_t earjack_key_state_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct sec_jack_info *hi = dev_get_drvdata(dev);
+	int value = 0;
+
+	if (hi->pressed <= 0)
+		value = 0;
+	else
+		value = 1;
+
+	return sprintf(buf, "%d\n", value);
+}
+
+static ssize_t earjack_key_state_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t size)
+{
+	pr_info("%s : operate nothing\n", __func__);
+
+	return size;
+}
+
+static ssize_t earjack_state_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct sec_jack_info *hi = dev_get_drvdata(dev);
+	int value = 0;
+
+	if (hi->cur_jack_type == SEC_HEADSET_4POLE)
+		value = 1;
+	else
+		value = 0;
+
+	return sprintf(buf, "%d\n", value);
+}
+
+static ssize_t earjack_state_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t size)
+{
+	pr_info("%s : operate nothing\n", __func__);
+
+	return size;
+}
+static DEVICE_ATTR(key_state, S_IRUGO | S_IWUSR | S_IWGRP,
+		   earjack_key_state_show, earjack_key_state_store);
+
+static DEVICE_ATTR(state, S_IRUGO | S_IWUSR | S_IWGRP,
+		   earjack_state_show, earjack_state_store);
+#endif
+
 static DEVICE_ATTR(select_jack, S_IRUGO | S_IWUSR | S_IWGRP,
 		select_jack_show, select_jack_store);
+
+#ifdef CONFIG_JACK_RESELECTOR_SUPPORT
+static ssize_t reselect_jack_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	pr_info("%s : operate nothing\n", __func__);
+
+	return 0;
+}
+
+static ssize_t reselect_jack_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct sec_jack_info *hi = dev_get_drvdata(dev);
+	int value = 0;
+
+
+	sscanf(buf, "%d", &value);
+	pr_err("%s: User reselection : 0X%x", __func__, value);
+
+	if (value == 1) {
+		recheck_jack = true;
+		determine_jack_type(hi);
+	}
+
+	return size;
+}
+
+static DEVICE_ATTR(reselect_jack, S_IRUGO | S_IWUSR | S_IWGRP,
+		reselect_jack_show, reselect_jack_store);
+#endif
 
 static int sec_jack_probe(struct platform_device *pdev)
 {
@@ -530,12 +664,13 @@ static int sec_jack_probe(struct platform_device *pdev)
 
 	hi->det_irq = gpio_to_irq(pdata->det_gpio);
 
-	jack_class = class_create(THIS_MODULE, "jack");
+	jack_class = class_create(THIS_MODULE, JACK_CLASS_NAME);
 	if (IS_ERR(jack_class))
 		pr_err("Failed to create class(sec_jack)\n");
 
 	/* support PBA function test */
-	jack_dev = device_create(jack_class, NULL, 0, hi, "jack_selector");
+
+	jack_dev = device_create(jack_class, NULL, 0, hi, JACK_DEV_NAME);
 	if (IS_ERR(jack_dev))
 		pr_err("Failed to create device(sec_jack)!= %ld\n",
 			IS_ERR(jack_dev));
@@ -544,6 +679,28 @@ static int sec_jack_probe(struct platform_device *pdev)
 		pr_err("Failed to create device file(%s)!\n",
 			dev_attr_select_jack.attr.name);
 
+#ifdef CONFIG_JACK_RESELECTOR_SUPPORT
+	jack_reselector = device_create(jack_class, NULL, 0, hi,
+		JACK_RESELECTOR_NAME);
+	if (IS_ERR(jack_reselector))
+		pr_err("Failed to create device(sec_jack)!= %ld\n",
+			IS_ERR(jack_reselector));
+
+	if (device_create_file(jack_reselector, &dev_attr_reselect_jack) < 0)
+		pr_err("Failed to create device file(%s)!\n",
+			dev_attr_reselect_jack.attr.name);
+#endif
+
+#if defined(CONFIG_MACH_PX) || defined(CONFIG_MACH_P4NOTE) \
+	|| defined(CONFIG_MACH_GC1)
+	if (device_create_file(jack_dev, &dev_attr_key_state) < 0)
+		pr_err("Failed to create device file (%s)!\n",
+			dev_attr_key_state.attr.name);
+
+	if (device_create_file(jack_dev, &dev_attr_state) < 0)
+		pr_err("Failed to create device file (%s)!\n",
+			dev_attr_state.attr.name);
+#endif
 	set_bit(EV_KEY, hi->ids[0].evbit);
 	hi->ids[0].flags = INPUT_DEVICE_ID_MATCH_EVBIT;
 	hi->handler.filter = sec_jack_buttons_filter;

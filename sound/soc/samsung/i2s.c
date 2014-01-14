@@ -29,7 +29,8 @@
 #include "i2s.h"
 #include "srp-types.h"
 
-#ifdef CONFIG_SND_SOC_U1_MC1N2
+#if defined(CONFIG_SND_SAMSUNG_RP) && \
+	(defined(CONFIG_MACH_U1) || defined(CONFIG_MACH_TRATS))
 #define USE_ALT_REG_RECOVER
 #endif
 
@@ -97,11 +98,14 @@ static inline bool is_srp_enabled(struct i2s_dai *i2s, u32 stream)
 		return false;
 }
 
-/* Get srp status(opened/running) infomation */
+/* Get srp status(opened/running) information */
 static inline int srp_active(struct i2s_dai *i2s, int cmd)
 {
 #if defined(CONFIG_SND_SAMSUNG_RP) || defined(CONFIG_SND_SAMSUNG_ALP)
-	return srp_get_status(cmd);
+	if ((i2s->pdev->id == 0) || (i2s->pdev->id == SAMSUNG_I2S_SECOFF))
+		return srp_get_status(cmd);
+	else
+		return 0;
 #else
 	return 0;
 #endif
@@ -350,10 +354,8 @@ static void i2s_txctrl(struct i2s_dai *i2s, int on, int stream)
 		}
 
 		if (!srp_active(i2s, IS_RUNNING)) {
-#ifndef PRODUCT_SHIP
 			printk(KERN_DEBUG
 				"%s: Turn Off - spr is no active\n", __func__);
-#endif
 			con |=  CON_TXCH_PAUSE;
 
 			if (any_rx_active(i2s))
@@ -757,14 +759,16 @@ static int i2s_startup(struct snd_pcm_substream *substream,
 {
 	struct i2s_dai *i2s = to_info(dai);
 	struct i2s_dai *other = i2s->pri_dai ? : i2s->sec_dai;
-	bool other_tx_rx_active = false;
 	unsigned long flags;
 
 	spin_lock_irqsave(&lock, flags);
 
-	i2s->mode |= DAI_OPENED;
+        if (is_opened(i2s))
+                goto startup_exit;
 
-	if (is_manager(other))
+        /* Open dai */
+	i2s->mode |= DAI_OPENED;
+        if (is_manager(other))
 		i2s->mode &= ~DAI_MANAGER;
 	else
 		i2s->mode |= DAI_MANAGER;
@@ -772,19 +776,31 @@ static int i2s_startup(struct snd_pcm_substream *substream,
 	/* Enforce set_sysclk in Master mode */
 	i2s->rclk_srcrate = 0;
 
-	if (other) {
-		if (other->tx_active || other->rx_active)
-			other_tx_rx_active = true;
-	}
-
-	if (!i2s->tx_active && !i2s->rx_active && !other_tx_rx_active
-		&& !srp_active(i2s, IS_OPENED)) {
+#ifdef USE_ALT_REG_RECOVER
+        if (!is_opened(other) && !srp_active(i2s, IS_OPENED)) {
 		i2s_clk_enable(i2s, true);
 
-		if (i2s->reg_saved)
+		/* Set default clk for I2S */
+		writel((MOD_OPCLK_PCLK | MOD_CDCLK_IN | MOD_RCLK_I2SCLK),
+			i2s->addr + I2SMOD);
+	}
+#else
+	if (!is_opened(other)
+#if defined(CONFIG_SND_SAMSUNG_RP)
+		&& !srp_active(i2s, IS_OPENED)
+#endif
+		)
+		i2s_clk_enable(i2s, true);
+
+	if (i2s->reg_saved) {
+		if (is_opened(other))
+			i2s->reg_saved = false;
+		else
 			i2s_reg_restore(dai);
 	}
+#endif
 
+startup_exit:
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		i2s->tx_active = true;
 	else
@@ -800,11 +816,20 @@ static void i2s_shutdown(struct snd_pcm_substream *substream,
 {
 	struct i2s_dai *i2s = to_info(dai);
 	struct i2s_dai *other = i2s->pri_dai ? : i2s->sec_dai;
-	bool other_tx_rx_active = false;
 	unsigned long flags;
 
 	spin_lock_irqsave(&lock, flags);
 
+        /* disable stream_active */
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		i2s->tx_active = false;
+	else
+		i2s->rx_active = false;
+
+        if (i2s->tx_active || i2s->rx_active)
+                goto shutdown_exit;
+
+        /* Close dai */
 	i2s->mode &= ~DAI_OPENED;
 	i2s->mode &= ~DAI_MANAGER;
 
@@ -815,29 +840,23 @@ static void i2s_shutdown(struct snd_pcm_substream *substream,
 	i2s->rfs = 0;
 	i2s->bfs = 0;
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		i2s->tx_active = false;
-	else
-		i2s->rx_active = false;
-
-	if (other) {
-		if (other->tx_active || other->rx_active)
-			other_tx_rx_active = true;
-	}
-
-	if (!i2s->tx_active && !i2s->rx_active && !other_tx_rx_active
-		&& !srp_active(i2s, IS_OPENED)) {
+#ifdef USE_ALT_REG_RECOVER
+	if (!is_opened(other) && !srp_active(i2s, IS_OPENED))
+		i2s_clk_enable(i2s, false);
+#else
+	if (!is_opened(other) && !srp_active(i2s, IS_RUNNING)) {
 		/* Gate CDCLK by default */
-		if (!is_opened(i2s))
-			i2s_set_sysclk(dai, SAMSUNG_I2S_CDCLK,
-				0, SND_SOC_CLOCK_IN);
+		i2s_set_sysclk(dai, SAMSUNG_I2S_CDCLK, 0, SND_SOC_CLOCK_IN);
 
 		if (!i2s->reg_saved)
 			i2s_reg_save(dai);
-
-		i2s_clk_enable(i2s, false);
 	}
 
+	if (!is_opened(other) && !srp_active(i2s, IS_OPENED))
+		i2s_clk_enable(i2s, false);
+#endif
+
+shutdown_exit:
 	spin_unlock_irqrestore(&lock, flags);
 }
 
@@ -958,10 +977,10 @@ static int i2s_trigger(struct snd_pcm_substream *substream,
 				goto exit_err;
 		}
 
-		local_irq_save(flags);
+		spin_lock_irqsave(&lock, flags);
 
 		if (config_setup(i2s)) {
-			local_irq_restore(flags);
+			spin_unlock_irqrestore(&lock, flags);
 			return -EINVAL;
 		}
 
@@ -970,12 +989,12 @@ static int i2s_trigger(struct snd_pcm_substream *substream,
 		else
 			i2s_txctrl(i2s, 1, substream->stream);
 
-		local_irq_restore(flags);
+		spin_unlock_irqrestore(&lock, flags);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		local_irq_save(flags);
+		spin_lock_irqsave(&lock, flags);
 
 		if (capture)
 			i2s_rxctrl(i2s, 0);
@@ -988,7 +1007,7 @@ static int i2s_trigger(struct snd_pcm_substream *substream,
 			if (!srp_active(i2s, IS_RUNNING))
 				i2s_fifo(i2s, FIC_TXFLUSH, substream->stream);
 		}
-		local_irq_restore(flags);
+		spin_unlock_irqrestore(&lock, flags);
 		break;
 	}
 
@@ -1125,7 +1144,6 @@ static int samsung_i2s_dai_probe(struct snd_soc_dai *dai)
 	i2s->reg_saved_by_pm = false;
 	i2s_clk_enable(i2s, false);
 
-probe_exit:
 	return 0;
 }
 
@@ -1177,7 +1195,7 @@ struct i2s_dai *i2s_alloc_dai(struct platform_device *pdev, bool sec)
 	i2s->i2s_dai_drv.suspend = i2s_suspend;
 	i2s->i2s_dai_drv.resume = i2s_resume;
 	i2s->i2s_dai_drv.playback.channels_min = 2;
-	i2s->i2s_dai_drv.playback.channels_max = 2;
+	i2s->i2s_dai_drv.playback.channels_max = 6;
 	i2s->i2s_dai_drv.playback.rates = SAMSUNG_I2S_RATES;
 	i2s->i2s_dai_drv.playback.formats = SAMSUNG_I2S_FMTS;
 

@@ -16,6 +16,8 @@
 #include <linux/platform_data/usb3503.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/regulator/consumer.h>
+#include <linux/err.h>
 
 static int usb3503_register_write(struct i2c_client *i2c_dev, char reg,
 	char data)
@@ -36,8 +38,8 @@ static int usb3503_register_write(struct i2c_client *i2c_dev, char reg,
 
 	ret = i2c_transfer(i2c_dev->adapter, msg, 1);
 	if (ret < 0)
-		pr_err(HUB_TAG "%s: reg: %x data: %x write failed\n",
-		__func__, reg, data);
+		pr_err(HUB_TAG "%s: reg: %x data: %x write failed (err %d)\n",
+						__func__, reg, data, ret);
 
 	return ret;
 }
@@ -63,7 +65,8 @@ static int usb3503_register_read(struct i2c_client *i2c_dev, char reg,
 
 	ret = i2c_transfer(i2c_dev->adapter, msgs, 2);
 	if (ret < 0)
-		pr_err(HUB_TAG "%s: reg: %x read failed\n", __func__, reg);
+		pr_err(HUB_TAG "%s: reg: %x read failed (err %d)\n",
+						__func__, reg, ret);
 
 	return ret;
 }
@@ -76,18 +79,24 @@ void s5pv210_hsic_port1_power(int enable)
 static int reg_write(struct i2c_client *i2c_dev, char reg, char req, int retry)
 {
 	int cnt = retry, err;
-	char data;
+	char data = 0;
 
 	pr_debug(HUB_TAG "%s: write %02X, data: %02x\n", __func__, reg, req);
+
 	do {
 		err = usb3503_register_write(i2c_dev, reg, req);
-		if (err < 0)
-			goto exit;
+		if (err < 0) {
+			pr_err(HUB_TAG "%s: usb3503_register_write failed"
+					" - retry(%d)", __func__, cnt);
+			continue;
+		}
+
 		err = usb3503_register_read(i2c_dev, reg, &data);
 		if (err < 0)
-			goto exit;
+			pr_err(HUB_TAG "%s: usb3503_register_read failed"
+					" - retry(%d)", __func__, cnt);
 	} while (data != req && cnt--);
-exit:
+
 	pr_info(HUB_TAG "%s: write %02X, req:%02x, val:%02x\n", __func__, reg,
 		req, data);
 
@@ -100,10 +109,15 @@ static int reg_update(struct i2c_client *i2c_dev, char reg, char req, int retry)
 	char data;
 
 	pr_debug(HUB_TAG "%s: update %02X, data: %02x\n", __func__, reg, req);
+
 	do {
 		err = usb3503_register_read(i2c_dev, reg, &data);
-		if (err < 0)
-			goto exit;
+		if (err < 0) {
+			pr_err(HUB_TAG "%s: usb3503_register_read failed"
+					" - retry(%d)", __func__, cnt);
+			continue;
+		}
+
 		pr_debug(HUB_TAG "%s: read %02X, data: %02x\n", __func__, reg,
 			data);
 		if ((data & req) == req) {
@@ -113,9 +127,10 @@ static int reg_update(struct i2c_client *i2c_dev, char reg, char req, int retry)
 		}
 		err = usb3503_register_write(i2c_dev, reg, data | req);
 		if (err < 0)
-			goto exit;
+			pr_err(HUB_TAG "%s: usb3503_register_write failed"
+					" - retry(%d)", __func__, cnt);
 	} while (cnt--);
-exit:
+
 	pr_info(HUB_TAG "%s: update %02X, req:%02x, val:%02x\n", __func__, reg,
 		req, data);
 	return err;
@@ -129,8 +144,11 @@ static int reg_clear(struct i2c_client *i2c_dev, char reg, char req, int retry)
 	pr_debug(HUB_TAG "%s: clear %X, data %x\n", __func__, reg, req);
 	do {
 		err = usb3503_register_read(i2c_dev, reg, &data);
-		if (err < 0)
-			goto exit;
+		if (err < 0) {
+			pr_err(HUB_TAG "%s: usb3503_register_read failed"
+					" - retry(%d)", __func__, cnt);
+			continue;
+		}
 		pr_debug(HUB_TAG "%s: read %02X, data %02x\n", __func__, reg,
 			data);
 		if (!(data & req)) {
@@ -140,9 +158,10 @@ static int reg_clear(struct i2c_client *i2c_dev, char reg, char req, int retry)
 		}
 		err = usb3503_register_write(i2c_dev, reg, data & ~req);
 		if (err < 0)
-			goto exit;
+			pr_err(HUB_TAG "%s: usb3503_register_write failed"
+					" - retry(%d)", __func__, cnt);
 	} while (cnt--);
-exit:
+
 	pr_info(HUB_TAG "%s: clear %02X, req:%02x, val:%02x\n", __func__, reg,
 		req, data);
 	return err;
@@ -164,7 +183,7 @@ static int usb3503_set_mode(struct usb3503_hubctl *hc, int mode)
 			(SPILOCK_CONNECT_N | SPILOCK_CONFIG_N), 3);
 		if (err < 0) {
 			pr_err(HUB_TAG "SP_ILOCK write fail err = %d\n", err);
-			goto exit;
+			break;
 		}
 #ifdef USB3503_ES_VER
 /* ES version issue
@@ -174,27 +193,27 @@ static int usb3503_set_mode(struct usb3503_hubctl *hc, int mode)
 		err = reg_update(i2c_dev, CFGP_REG, CFGP_CLKSUSP, 1);
 		if (err < 0) {
 			pr_err(HUB_TAG "CFGP update fail err = %d\n", err);
-			goto exit;
+			break;
 		}
 #endif
 		/* PDS : Port2,3 Disable For Self Powered Operation */
 		err = reg_update(i2c_dev, PDS_REG, (PDS_PORT2 | PDS_PORT3), 1);
 		if (err < 0) {
 			pr_err(HUB_TAG "PDS update fail err = %d\n", err);
-			goto exit;
+			break;
 		}
 		/* CFG1 : SELF_BUS_PWR -> Self-Powerd operation */
 		err = reg_update(i2c_dev, CFG1_REG, CFG1_SELF_BUS_PWR, 1);
 		if (err < 0) {
 			pr_err(HUB_TAG "CFG1 update fail err = %d\n", err);
-			goto exit;
+			break;
 		}
 		/* SP_LOCK: clear connect_n, config_n for hub connect */
 		err = reg_clear(i2c_dev, SP_ILOCK_REG,
-			(SPILOCK_CONNECT_N | SPILOCK_CONFIG_N), 1);
+			(SPILOCK_CONNECT_N | SPILOCK_CONFIG_N), 3);
 		if (err < 0) {
 			pr_err(HUB_TAG "SP_ILOCK clear err = %d\n", err);
-			goto exit;
+			break;
 		}
 		hc->mode = mode;
 
@@ -210,10 +229,15 @@ static int usb3503_set_mode(struct usb3503_hubctl *hc, int mode)
 	default:
 		pr_err(HUB_TAG "%s: Invalid mode %d\n", __func__, mode);
 		err = -EINVAL;
-		goto exit;
 		break;
 	}
-exit:
+
+	if (err < 0) {
+		hc->reset_n(0);
+		hc->mode = USB3503_MODE_STANDBY;
+		pr_err(HUB_TAG "%s: set to standby due to error\n", __func__);
+	}
+
 	return err;
 }
 
@@ -324,11 +348,27 @@ static DEVICE_ATTR(reset, 0664, NULL, reset_store);
 int usb3503_suspend(struct i2c_client *client, pm_message_t mesg)
 {
 	struct usb3503_hubctl *hc = i2c_get_clientdata(client);
+#if defined(CONFIG_MACH_C1)
+	struct regulator *regulator;
+#endif
 
 	/* Should be disable the HSIC port1 */
 
 	hc->reset_n(0);
 	pr_info(HUB_TAG "suspended\n");
+
+#if defined(CONFIG_MACH_C1)
+
+	if (system_rev >= 0x6) {
+		regulator = regulator_get(NULL, "vusbhub_osc_1.8v");
+		if (IS_ERR(regulator)) {
+			pr_err(HUB_TAG "%s:Get VUSBHUBOSC Fail\n", __func__);
+			return 0;
+		}
+		regulator_disable(regulator);
+		regulator_put(regulator);
+	}
+#endif
 
 	return 0;
 }
@@ -336,6 +376,27 @@ int usb3503_suspend(struct i2c_client *client, pm_message_t mesg)
 int usb3503_resume(struct i2c_client *client)
 {
 	struct usb3503_hubctl *hc = i2c_get_clientdata(client);
+
+#if defined(CONFIG_MACH_M0_CTC)
+	return 0;
+#endif
+
+#if defined(CONFIG_MACH_C1)
+
+	struct regulator *regulator;
+
+	if (system_rev >= 0x6) {
+		regulator = regulator_get(NULL, "vusbhub_osc_1.8v");
+		if (IS_ERR(regulator)) {
+			pr_err(HUB_TAG "%s:Get VUSBHUBOSC Fail\n", __func__);
+			return 0;
+		}
+		regulator_enable(regulator);
+		regulator_put(regulator);
+
+		mdelay(3);
+	}
+#endif
 
 	if (hc->mode == USB3503_MODE_HUB)
 		usb3503_set_mode(hc, USB3503_MODE_HUB);
@@ -351,6 +412,21 @@ int usb3503_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	int err = 0;
 	struct usb3503_hubctl *hc;
 	struct usb3503_platform_data *pdata;
+
+#if defined(CONFIG_MACH_C1)
+
+	struct regulator *regulator;
+
+	if (system_rev >= 0x6) {
+		regulator = regulator_get(NULL, "vusbhub_osc_1.8v");
+		if (IS_ERR(regulator)) {
+			pr_err(HUB_TAG "%s:Get VUSBHUBOSC Fail\n", __func__);
+			return 0;
+		}
+		regulator_enable(regulator);
+		regulator_put(regulator);
+	}
+#endif
 
 	pr_info(HUB_TAG "%s:%d\n", __func__, __LINE__);
 

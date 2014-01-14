@@ -19,9 +19,16 @@
 #include <linux/syscore_ops.h>
 #include <linux/io.h>
 #include <linux/regulator/machine.h>
+#include <linux/interrupt.h>
+
+#if defined(CONFIG_MACH_M0_CTC)
+#include <linux/mfd/max77693.h>
+#endif
 
 #include <asm/cacheflush.h>
 #include <asm/hardware/cache-l2x0.h>
+#include <asm/cputype.h>
+#include <asm/smp_scu.h>
 
 #include <plat/cpu.h>
 #include <plat/pm.h>
@@ -328,8 +335,6 @@ void exynos4_cpu_suspend(void)
 
 	outer_flush_all();
 
-	/* Disable the full line of zero */
-	disable_cache_foz();
 #ifdef CONFIG_ARM_TRUSTZONE
 	exynos_smc(SMC_CMD_SLEEP, 0, 0, 0);
 #else
@@ -344,6 +349,11 @@ static int exynos4_pm_prepare(void)
 
 #if defined(CONFIG_REGULATOR)
 	ret = regulator_suspend_prepare(PM_SUSPEND_MEM);
+#endif
+
+#if defined(CONFIG_CACHE_L2X0) && defined(CONFIG_EXYNOS_C2C)
+	/* Disable the full line of zero */
+	disable_cache_foz();
 #endif
 
 	return ret;
@@ -372,10 +382,29 @@ static void exynos4_cpu_prepare(void)
 
 	/* Before enter central sequence mode, clock src register have to set */
 
+#if defined(CONFIG_CACHE_L2X0) && !defined(CONFIG_EXYNOS_C2C)
+	/* Disable the full line of zero */
+	disable_cache_foz();
+#endif
+
 	s3c_pm_do_restore_core(exynos4_set_clksrc, ARRAY_SIZE(exynos4_set_clksrc));
 
 	if (soc_is_exynos4210())
 		s3c_pm_do_restore_core(exynos4210_set_clksrc, ARRAY_SIZE(exynos4210_set_clksrc));
+}
+
+static unsigned int exynos4_pm_check_eint_pend(void)
+{
+	int i;
+	u32 wakeup_int_pend, pending_eint = 0;
+
+	for (i = 0; i < 4; i++) {
+		wakeup_int_pend =
+			(__raw_readl(S5P_EINT_PEND(i)) & 0xff) << (i * 8);
+		pending_eint |= wakeup_int_pend & ~s3c_irqwake_eintmask;
+	}
+
+	return pending_eint;
 }
 
 static int exynos4_pm_add(struct sys_device *sysdev)
@@ -388,28 +417,10 @@ static int exynos4_pm_add(struct sys_device *sysdev)
 	pm_finish = exynos4_pm_finish;
 #endif
 
+	if (soc_is_exynos4210())
+		pm_check_eint_pend = exynos4_pm_check_eint_pend;
+
 	return 0;
-}
-
-/* This function copy from linux/arch/arm/kernel/smp_scu.c */
-
-void exynos4_scu_enable(void __iomem *scu_base)
-{
-	u32 scu_ctrl;
-
-	scu_ctrl = __raw_readl(scu_base);
-	/* already enabled? */
-	if (scu_ctrl & 1)
-		return;
-
-	scu_ctrl |= 1;
-	__raw_writel(scu_ctrl, scu_base);
-
-	/*
-	 * Ensure that the data accessed by CPU0 before the SCU was
-	 * initialised is visible to the other CPUs.
-	 */
-	flush_cache_all();
 }
 
 static struct sysdev_driver exynos4_pm_driver = {
@@ -434,6 +445,54 @@ static __init int exynos4_pm_drvinit(void)
 	return sysdev_driver_register(&exynos4_sysclass, &exynos4_pm_driver);
 }
 arch_initcall(exynos4_pm_drvinit);
+
+static void exynos4_show_wakeup_reason_eint(void)
+{
+	int bit, i;
+	long unsigned int ext_int_pend;
+	unsigned long eint_wakeup_mask;
+	bool found = 0;
+
+	eint_wakeup_mask = __raw_readl(S5P_EINT_WAKEUP_MASK);
+
+	for (i = 0; i <= 4; i++) {
+		ext_int_pend = __raw_readl(S5P_EINT_PEND(i));
+
+		for_each_set_bit(bit, &ext_int_pend, 8) {
+			int irq = IRQ_EINT(i * 8) + bit;
+			struct irq_desc *desc = irq_to_desc(irq);
+
+			if (eint_wakeup_mask & (1 << (i * 8 + bit)))
+				continue;
+
+			if (desc && desc->action && desc->action->name)
+				pr_info("Resume caused by IRQ %d, %s\n", irq,
+					desc->action->name);
+			else
+				pr_info("Resume caused by IRQ %d\n", irq);
+
+			found = 1;
+		}
+	}
+
+	if (!found)
+		pr_info("Resume caused by unknown EINT\n");
+}
+
+static void exynos4_show_wakeup_reason(void)
+{
+	unsigned long wakeup_stat;
+
+	wakeup_stat = __raw_readl(S5P_WAKEUP_STAT);
+
+	if (wakeup_stat & S5P_WAKEUP_STAT_RTCALARM)
+		pr_info("Resume caused by RTC alarm\n");
+	else if (wakeup_stat & S5P_WAKEUP_STAT_EINT)
+		exynos4_show_wakeup_reason_eint();
+	else
+		pr_info("Resume caused by wakeup_stat=0x%08lx\n",
+			wakeup_stat);
+}
 
 static int exynos4_pm_suspend(void)
 {
@@ -479,6 +538,12 @@ static int exynos4_pm_suspend(void)
 	return 0;
 }
 
+#if !defined(CONFIG_CPU_EXYNOS4210)
+#define CHECK_POINT printk(KERN_DEBUG "%s:%d\n", __func__, __LINE__)
+#else
+#define CHECK_POINT
+#endif
+
 static void exynos4_pm_resume(void)
 {
 	unsigned long tmp;
@@ -493,6 +558,7 @@ static void exynos4_pm_resume(void)
 		tmp |= S5P_CENTRAL_LOWPWR_CFG;
 		__raw_writel(tmp, S5P_CENTRAL_SEQ_CONFIGURATION);
 		/* No need to perform below restore code */
+		pr_info("%s: early_wakeup\n", __func__);
 		goto early_wakeup;
 	}
 
@@ -514,6 +580,23 @@ static void exynos4_pm_resume(void)
 		s3c_pm_do_restore(exynos4x12_regs_save,
 					ARRAY_SIZE(exynos4x12_regs_save));
 
+#if defined(CONFIG_MACH_M0_CTC)
+{
+	if (max7693_muic_cp_usb_state()) {
+		if (system_rev < 11) {
+			gpio_direction_output(GPIO_USB_BOOT_EN, 1);
+		} else if (system_rev == 11) {
+			gpio_direction_output(GPIO_USB_BOOT_EN, 1);
+			gpio_direction_output(GPIO_USB_BOOT_EN_REV06, 1);
+		} else {
+			gpio_direction_output(GPIO_USB_BOOT_EN_REV06, 1);
+		}
+	}
+}
+#endif
+
+	CHECK_POINT;
+
 	if (!exynos4_is_c2c_use())
 		s3c_pm_do_restore_core(exynos4_core_save, ARRAY_SIZE(exynos4_core_save));
 	else {
@@ -528,7 +611,22 @@ static void exynos4_pm_resume(void)
 	/* For the suspend-again to check the value */
 	s3c_suspend_wakeup_stat = __raw_readl(S5P_WAKEUP_STAT);
 
-	exynos4_scu_enable(S5P_VA_SCU);
+	CHECK_POINT;
+
+	if ((__raw_readl(S5P_WAKEUP_STAT) == 0) && soc_is_exynos4412()) {
+		__raw_writel(__raw_readl(S5P_EINT_PEND(0)), S5P_EINT_PEND(0));
+		__raw_writel(__raw_readl(S5P_EINT_PEND(1)), S5P_EINT_PEND(1));
+		__raw_writel(__raw_readl(S5P_EINT_PEND(2)), S5P_EINT_PEND(2));
+		__raw_writel(__raw_readl(S5P_EINT_PEND(3)), S5P_EINT_PEND(3));
+		__raw_writel(0x01010001, S5P_ARM_CORE_OPTION(0));
+		__raw_writel(0x00000001, S5P_ARM_CORE_OPTION(1));
+		__raw_writel(0x00000001, S5P_ARM_CORE_OPTION(2));
+		__raw_writel(0x00000001, S5P_ARM_CORE_OPTION(3));
+	}
+
+	scu_enable(S5P_VA_SCU);
+
+	CHECK_POINT;
 
 #ifdef CONFIG_CACHE_L2X0
 #ifdef CONFIG_ARM_TRUSTZONE
@@ -539,11 +637,18 @@ static void exynos4_pm_resume(void)
 				       exynos4_l2cc_save[1].val,
 				       exynos4_l2cc_save[2].val);
 
+	CHECK_POINT;
+
 	exynos_smc(SMC_CMD_L2X0SETUP2,
 			L2X0_DYNAMIC_CLK_GATING_EN | L2X0_STNDBY_MODE_EN,
 			0x7C470001, 0xC200FFFF);
 
+	CHECK_POINT;
+
 	exynos_smc(SMC_CMD_L2X0INVALL, 0, 0, 0);
+
+	CHECK_POINT;
+
 	exynos_smc(SMC_CMD_L2X0CTRL, 1, 0, 0);
 #else
 	s3c_pm_do_restore_core(exynos4_l2cc_save, ARRAY_SIZE(exynos4_l2cc_save));
@@ -551,16 +656,24 @@ static void exynos4_pm_resume(void)
 	/* enable L2X0*/
 	writel_relaxed(1, S5P_VA_L2CC + L2X0_CTRL);
 #endif
-	/* Enable the full line of zero */
-	enable_cache_foz();
 #endif
+
+	CHECK_POINT;
 
 early_wakeup:
 	if (!soc_is_exynos4210())
 		exynos4_reset_assert_ctrl(1);
 
+#ifdef CONFIG_CACHE_L2X0
+	/* Enable the full line of zero */
+	enable_cache_foz();
+#endif
+
+	CHECK_POINT;
+
 	/* Clear Check mode */
 	__raw_writel(0x0, REG_INFORM1);
+	exynos4_show_wakeup_reason();
 
 	return;
 }

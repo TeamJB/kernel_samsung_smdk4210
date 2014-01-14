@@ -20,9 +20,9 @@ extern void midas_config_sleep_gpio_table(void);
 #define GPIO_PMIC_SDA		EXYNOS4_GPB(2)
 #define GPIO_PMIC_SCL		EXYNOS4_GPB(3)
 
-#define GPIO_ADC_SCL		EXYNOS4_GPY0(2)
-#define GPIO_ADC_SDA		EXYNOS4_GPY0(3)
-#define GPIO_ADC_INT		EXYNOS4_GPX2(4)
+#define GPIO_FM_SCL		EXYNOS4_GPY0(2)
+#define GPIO_FM_SDA		EXYNOS4_GPY0(3)
+#define GPIO_ADC_INT		EXYNOS4_GPX2(4)	/* rev0.0, 0.1 */
 
 #define GPIO_CAM_SPI_SCLK	EXYNOS4_GPB(4)
 #define GPIO_CAM_SPI_SSN	EXYNOS4_GPB(5)
@@ -38,14 +38,19 @@ extern void midas_config_sleep_gpio_table(void);
 #define GPIO_CAM_AF_EN		EXYNOS4212_GPM0(4)
 #define GPIO_CAM_VT_nRST	EXYNOS4212_GPM1(6)
 
+#if 1
+#define GPIO_8M_CAM_SCL_18V	EXYNOS4_GPD1(0)
+#define GPIO_8M_CAM_SDA_18V	EXYNOS4_GPD1(1)
+#else
 #define GPIO_8M_CAM_SCL_18V	EXYNOS4212_GPM4(0)
 #define GPIO_8M_CAM_SDA_18V	EXYNOS4212_GPM4(1)
 #define GPIO_8M_CAM_SCL_18V_00	EXYNOS4_GPD1(0)
 #define GPIO_8M_CAM_SDA_18V_00	EXYNOS4_GPD1(1)
+#endif
 
 #define GPIO_VT_CAM_SCL_18V	EXYNOS4212_GPM4(2)
 #define GPIO_VT_CAM_SDA_18V	EXYNOS4212_GPM4(3)
-#define GPIO_VT_CAM_ID			EXYNOS4_GPF1(2)
+#define GPIO_VT_CAM_ID		EXYNOS4_GPF1(2)
 
 /* Sensors & NFC*/
 #define GPIO_PS_ALS_EN		EXYNOS4212_GPJ0(5)
@@ -66,6 +71,7 @@ extern void midas_config_sleep_gpio_table(void);
 #define GPIO_MSENSOR_INT	EXYNOS4212_GPJ0(7)
 #define GPIO_MSENSOR_SDA_18V	EXYNOS4_GPY2(4)
 #define GPIO_MSENSOR_SCL_18V	EXYNOS4_GPY2(5)
+#define GPIO_MSENSE_RST_N	EXYNOS4_GPC1(1)
 
 #define GPIO_BENSE_SCL_18V	EXYNOS4_GPY2(3)
 #define GPIO_BSENSE_SDA_18V	EXYNOS4_GPY2(2)
@@ -135,8 +141,8 @@ extern void midas_config_sleep_gpio_table(void);
 #define GPIO_3_TOUCH_SCL	EXYNOS4_GPL0(1)
 #define GPIO_3_TOUCH_SDA	EXYNOS4_GPL0(2)
 #define GPIO_HDMI_EN		EXYNOS4_GPL0(4)
-#define GPIO_3_TOUCH_INT	EXYNOS4212_GPJ1(0)
-#define GPIO_TOUCH_EN		EXYNOS4212_GPJ0(3)
+#define GPIO_3_TOUCH_INT	EXYNOS4212_GPJ0(3)
+#define GPIO_3_TOUCH_EN		EXYNOS4212_GPM0(0)
 
 #define GPIO_PWM0		EXYNOS4_GPD0(0)
 #define GPIO_PWM1		EXYNOS4_GPD0(1)
@@ -231,6 +237,7 @@ extern void midas_config_sleep_gpio_table(void);
 
 #define GPIO_FUEL_ALERT		EXYNOS4_GPX2(3)
 
+#define GPIO_V_BUS_INT		EXYNOS4_GPX2(4)	/* rev0.9 ~ */
 #define GPIO_WPC_INT		EXYNOS4_GPX3(0)
 
 #define GPIO_VIBTONE_PWM	EXYNOS4_GPD0(1)
@@ -260,6 +267,7 @@ extern void midas_config_sleep_gpio_table(void);
 #define GPIO_CP_DUMP_INT	EXYNOS4_GPX1(2)
 #define GPIO_PHONE_ACTIVE	EXYNOS4_GPX1(6)
 #define GPIO_CP_RST		EXYNOS4_GPX3(2)
+#define GPIO_AP_DUMP_INT	EXYNOS4212_GPJ0(1)
 
 #define GPIO_FM_RST EXYNOS4_GPC1(1)
 #else
@@ -293,6 +301,10 @@ extern void midas_config_sleep_gpio_table(void);
 #define IRQ_CP_DUMP_INT	IRQ_EINT10
 #endif
 
+#define GPIO_OK_KEY_ANDROID	EXYNOS4_GPX0(1)		/*system_rev == 11*/
+#define GPIO_OK_KEY_ANDROID_F EXYNOS4_GPX1(3)	/*system_rev >= 15*/
+
+#define GPIO_FM_INT_REV15	EXYNOS4_GPX1(4)
 #define GPIO_FM_INT_REV07	EXYNOS4_GPX1(3)
 #define GPIO_FM_INT		EXYNOS4_GPX1(3)
 #define GPIO_FM_MIC_SW		EXYNOS4_GPL0(3)

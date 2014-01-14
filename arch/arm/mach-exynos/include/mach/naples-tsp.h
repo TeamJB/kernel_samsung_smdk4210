@@ -15,5 +15,6 @@
 #endif
 extern bool is_cable_attached;
 void naples_tsp_init(void);
+void tsp_charger_infom(bool en);
 
 #endif /* __MIDAS_TSP_H */

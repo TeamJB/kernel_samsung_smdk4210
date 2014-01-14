@@ -25,6 +25,9 @@
 #include "mali_pmm_policy.h"
 #include "mali_pmm_pmu.h"
 #include "mali_platform.h"
+#include "mali_kernel_pm.h"
+
+#include "mali_linux_pm.h"
 
 /* Internal PMM subsystem state */
 static _mali_pmm_internal_state_t *pmm_state = NULL;
@@ -583,7 +586,10 @@ void malipmm_force_powerup( void )
 
 	if (pmm->cores_powered == 0)
 	{
-		malipmm_powerup(pmm->cores_registered);
+		if ( _MALI_OSK_ERR_OK !=malipmm_powerup(pmm->cores_registered))
+		{
+			MALI_PRINT( ("PMM: Error powering up malipmm_force_powerup function"));
+		}
 	}
 }
 
@@ -636,17 +642,22 @@ _mali_osk_errcode_t malipmm_powerup( u32 cores )
         _mali_osk_errcode_t err = _MALI_OSK_ERR_OK;
         _mali_pmm_internal_state_t *pmm = GET_PMM_STATE_PTR;
 
+	if (mali_dvfs_device_state == _MALI_DEVICE_SHUTDOWN) {
+		mali_pd_enable();
+		enable_mali_clocks();
+		MALI_PRINT(("PMM: malipmm_powerup in the"
+				"_MALI_DEVICE_SHUTDOWN state"));
+		return err;
+	}
+
 	/* If all the cores are powered down, power up the MALI */
-        if (pmm->cores_powered == 0)
-        {
-                mali_platform_power_mode_change(MALI_POWER_MODE_ON);
+        if (pmm->cores_powered == 0) {
+		mali_platform_power_mode_change(MALI_POWER_MODE_ON);
 #if MALI_PMM_RUNTIME_JOB_CONTROL_ON
 		/* Initiate the power up */
 		if (_mali_osk_pmm_dev_activate() < 0) {
-				       MALI_PRINT(("PMM: Mali PMM device activate failed\n"));
-				       err = _MALI_OSK_ERR_FAULT;
-				       return err;
-			       }
+			return _MALI_OSK_ERR_FAULT;
+		}
 #endif
         }
 

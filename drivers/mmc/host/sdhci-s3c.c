@@ -383,16 +383,14 @@ static void sdhci_s3c_notify_change(struct platform_device *dev, int state)
 		spin_lock_irqsave(&host->lock, flags);
 		if (state) {
 			dev_dbg(&dev->dev, "card inserted.\n");
+			pr_info("%s: card inserted.\n",
+					mmc_hostname(host->mmc));
 			host->quirks |= SDHCI_QUIRK_BROKEN_CARD_DETECTION;
-#ifdef CONFIG_MACH_MIDAS_01_BD
-			sdhci_s3c_vtf_on_off(1);
-#endif
 		} else {
 			dev_dbg(&dev->dev, "card removed.\n");
+			pr_info("%s: card removed.\n",
+					mmc_hostname(host->mmc));
 			host->quirks &= ~SDHCI_QUIRK_BROKEN_CARD_DETECTION;
-#ifdef CONFIG_MACH_MIDAS_01_BD
-			sdhci_s3c_vtf_on_off(0);
-#endif
 		}
 		tasklet_schedule(&host->card_tasklet);
 		spin_unlock_irqrestore(&host->lock, flags);
@@ -582,7 +580,7 @@ static int __devinit sdhci_s3c_probe(struct platform_device *pdev)
 	if (!host->ioaddr) {
 		dev_err(dev, "failed to map registers\n");
 		ret = -ENXIO;
-		goto err_req_regs;
+		goto err_add_host;
 	}
 
 	/* Ensure we have minimal gpio selected CMD/CLK/Detect */
@@ -610,9 +608,6 @@ static int __devinit sdhci_s3c_probe(struct platform_device *pdev)
 	 * transfers, not sure if this is a problem with this specific
 	 * SDHCI block, or a missing configuration that needs to be set. */
 	host->quirks |= SDHCI_QUIRK_NO_BUSY_IRQ;
-
-	/* This host supports the Auto CMD12 */
-	host->quirks |= SDHCI_QUIRK_MULTIBLOCK_READ_ACMD12;
 
 	if (pdata->cd_type == S3C_SDHCI_CD_NONE)
 		host->quirks |= SDHCI_QUIRK_BROKEN_CARD_DETECTION;
@@ -651,11 +646,6 @@ static int __devinit sdhci_s3c_probe(struct platform_device *pdev)
 	if (pdata->pm_flags)
 		host->mmc->pm_flags |= pdata->pm_flags;
 
-#ifdef CONFIG_MACH_MIDAS_01_BD
-	/* before calling shhci_add_host, you should turn vdd_tflash on */
-	sdhci_s3c_vtf_on_off(1);
-#endif
-
 	/* To turn on vmmc regulator only if sd card exists,
 	   GPIO pin for card detection should be initialized.
 	   Moved from sdhci_s3c_setup_card_detect_gpio() function */
@@ -691,17 +681,6 @@ static int __devinit sdhci_s3c_probe(struct platform_device *pdev)
 			dev_err(dev, "cannot request gpio for card detect\n");
 		}
 	}
-#ifdef CONFIG_MACH_PX
-	/*
-	 * sdhc which has S3C_SDHCI_CD_EXTERNAL flag means a wifi
-	 * on PX projects.
-	 */
-	if (pdata->cd_type == S3C_SDHCI_CD_EXTERNAL) {
-		/* w/a for h/w sdio interrupt */
-		host->quirks |= SDHCI_QUIRK_RESET_AFTER_REQUEST;
-	}
-#endif
-
 
 	ret = sdhci_add_host(host);
 	if (ret) {
@@ -727,28 +706,16 @@ static int __devinit sdhci_s3c_probe(struct platform_device *pdev)
 			pdata->ext_pdev(pdev);
 #endif
 	}
-#ifdef CONFIG_MACH_U1_NA_SPR
-	if (pdata->cd_type == S3C_SDHCI_CD_GPIO && pdata->ext_cd_init)
-		pdata->ext_cd_init(&sdhci_s3c_notify_change);
-#endif
 	if (pdata->cd_type == S3C_SDHCI_CD_GPIO &&
 	    gpio_is_valid(pdata->ext_cd_gpio))
 		sdhci_s3c_setup_card_detect_gpio(sc);
 
-#ifdef CONFIG_MACH_MIDAS_01_BD
-	/* if card dose not exist, it should turn vtf off */
-	if (pdata->cd_type == S3C_SDHCI_CD_GPIO &&
-			sdhci_s3c_get_card_exist(host))
-		sdhci_s3c_vtf_on_off(1);
-	else
-		sdhci_s3c_vtf_on_off(0);
-#endif
-
 	return 0;
 
  err_add_host:
-	release_resource(sc->ioarea);
-	kfree(sc->ioarea);
+	if (host->ioaddr)
+		iounmap(host->ioaddr);
+	release_mem_region(sc->ioarea->start, resource_size(sc->ioarea));
 
  err_req_regs:
 	for (ptr = 0; ptr < MAX_BUS_CLK; ptr++) {
@@ -775,10 +742,6 @@ static int __devexit sdhci_s3c_remove(struct platform_device *pdev)
 
 	if (pdata->cd_type == S3C_SDHCI_CD_EXTERNAL && pdata->ext_cd_cleanup)
 		pdata->ext_cd_cleanup(&sdhci_s3c_notify_change);
-#ifdef CONFIG_MACH_U1_NA_SPR
-	if (pdata->cd_type == S3C_SDHCI_CD_GPIO && pdata->ext_cd_cleanup)
-		pdata->ext_cd_cleanup(&sdhci_s3c_notify_change);
-#endif
 
 	if (sc->ext_cd_irq)
 		free_irq(sc->ext_cd_irq, sc);
@@ -812,36 +775,33 @@ static int __devexit sdhci_s3c_remove(struct platform_device *pdev)
 static int sdhci_s3c_suspend(struct platform_device *dev, pm_message_t pm)
 {
 	struct sdhci_host *host = platform_get_drvdata(dev);
+	int ret = 0;
 
-	sdhci_suspend_host(host, pm);
+	ret = sdhci_suspend_host(host, pm);
 
-#ifdef CONFIG_MACH_MIDAS_01_BD
-	/* turn vdd_tflash off */
-	sdhci_s3c_vtf_on_off(0);
-#endif
-	return 0;
+	return ret;
+}
+
+static void sdhci_s3c_shutdown(struct platform_device *dev)
+{
+	struct sdhci_host *host = platform_get_drvdata(dev);
+
+	sdhci_shutdown_host(host);
 }
 
 static int sdhci_s3c_resume(struct platform_device *dev)
 {
 	struct sdhci_host *host = platform_get_drvdata(dev);
+	int ret = 0;
 
-#if defined(CONFIG_WIMAX_CMC)/* && defined(CONFIG_TARGET_LOCALE_NA)*/
-
+#if defined(CONFIG_WIMAX_CMC)
 	struct s3c_sdhci_platdata *pdata = dev->dev.platform_data;
 	u32 ier;
 #endif
-#ifdef CONFIG_MACH_MIDAS_01_BD
-	/* turn vdd_tflash off if a card exists*/
-	if (sdhci_s3c_get_card_exist(host))
-		sdhci_s3c_vtf_on_off(1);
-	else
-		sdhci_s3c_vtf_on_off(0);
 
-#endif
-	sdhci_resume_host(host);
-#if defined(CONFIG_WIMAX_CMC)/* && defined(CONFIG_TARGET_LOCALE_NA)*/
+	ret = sdhci_resume_host(host);
 
+#if defined(CONFIG_WIMAX_CMC)
 	if (pdata->enable_intr_on_resume) {
 		ier = sdhci_readl(host, SDHCI_INT_ENABLE);
 		ier |= SDHCI_INT_CARD_INT;
@@ -849,7 +809,7 @@ static int sdhci_s3c_resume(struct platform_device *dev)
 		sdhci_writel(host, ier, SDHCI_SIGNAL_ENABLE);
 	}
 #endif
-	return 0;
+	return ret;
 }
 
 #else
@@ -862,6 +822,7 @@ static struct platform_driver sdhci_s3c_driver = {
 	.remove		= __devexit_p(sdhci_s3c_remove),
 	.suspend	= sdhci_s3c_suspend,
 	.resume	        = sdhci_s3c_resume,
+	.shutdown	= sdhci_s3c_shutdown,
 	.driver		= {
 		.owner	= THIS_MODULE,
 		.name	= "s3c-sdhci",
@@ -878,7 +839,11 @@ static void __exit sdhci_s3c_exit(void)
 	platform_driver_unregister(&sdhci_s3c_driver);
 }
 
+#ifdef CONFIG_FAST_RESUME
+beforeresume_initcall(sdhci_s3c_init);
+#else
 module_init(sdhci_s3c_init);
+#endif
 module_exit(sdhci_s3c_exit);
 
 MODULE_DESCRIPTION("Samsung SDHCI (HSMMC) glue");

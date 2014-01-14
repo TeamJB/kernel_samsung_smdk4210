@@ -1,1 +1,1 @@
-#define MOBICORE_COMPONENT_BUILD_TAG "*** SAMSUNG V05 release ###"
+#define MOBICORE_COMPONENT_BUILD_TAG "*** SAMSUNG V008 release ###"

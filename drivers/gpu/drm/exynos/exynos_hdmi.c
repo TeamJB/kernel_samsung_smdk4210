@@ -37,11 +37,51 @@
 
 #include "exynos_drm_drv.h"
 #include "exynos_drm_hdmi.h"
+#include "exynos_drm_iommu.h"
 
 #include "exynos_hdmi.h"
 
-#define HDMI_OVERLAY_NUMBER	3
+#define MAX_WIDTH		1920
+#define MAX_HEIGHT		1080
 #define get_hdmi_context(dev)	platform_get_drvdata(to_platform_device(dev))
+
+struct hdmi_resources {
+	struct clk			*hdmi;
+	struct clk			*sclk_hdmi;
+	struct clk			*sclk_pixel;
+	struct clk			*sclk_hdmiphy;
+	struct clk			*hdmiphy;
+	struct regulator_bulk_data	*regul_bulk;
+	int				regul_count;
+};
+
+struct hdmi_context {
+	struct device			*dev;
+	struct drm_device		*drm_dev;
+	bool				hpd;
+	bool				powered;
+	bool				is_v13;
+	bool				dvi_mode;
+	bool				iommu_on;
+	struct mutex			hdmi_mutex;
+
+	struct resource			*regs_res;
+	void __iomem			*regs;
+	unsigned int			external_irq;
+	unsigned int			internal_irq;
+
+	struct i2c_client		*ddc_port;
+	struct i2c_client		*hdmiphy_port;
+
+	/* current hdmiphy conf index */
+	int cur_conf;
+
+	struct hdmi_resources		res;
+	void				*parent_ctx;
+
+	void				(*cfg_hpd)(bool external);
+	int				(*get_hpd)(void);
+};
 
 /* HDMI Version 1.3 */
 static const u8 hdmiphy_v13_conf27[32] = {
@@ -322,6 +362,13 @@ static const u8 hdmiphy_conf27_027[32] = {
 	0x43, 0xa0, 0x0e, 0xd9, 0x45, 0xa0, 0xac, 0x80,
 	0x08, 0x80, 0x11, 0x04, 0x02, 0x22, 0x44, 0x86,
 	0x54, 0xe3, 0x24, 0x00, 0x00, 0x00, 0x01, 0x00,
+};
+
+static const u8 hdmiphy_conf74_176[32] = {
+	0x01, 0xd1, 0x1f, 0x10, 0x40, 0x5b, 0xef, 0x08,
+	0x81, 0xa0, 0xb9, 0xd8, 0x45, 0xa0, 0xac, 0x80,
+	0x5a, 0x80, 0x11, 0x04, 0x02, 0x22, 0x44, 0x86,
+	0x54, 0xa6, 0x24, 0x01, 0x00, 0x00, 0x01, 0x00,
 };
 
 static const u8 hdmiphy_conf74_25[32] = {
@@ -713,6 +760,63 @@ static const struct hdmi_preset_conf hdmi_conf_1080i60 = {
 	},
 };
 
+static const struct hdmi_preset_conf hdmi_conf_1080p30 = {
+	.core = {
+		.h_blank = {0x18, 0x01},
+		.v2_blank = {0x65, 0x04},
+		.v1_blank = {0x2d, 0x00},
+		.v_line = {0x65, 0x04},
+		.h_line = {0x98, 0x08},
+		.hsync_pol = {0x00},
+		.vsync_pol = {0x00},
+		.int_pro_mode = {0x00},
+		.v_blank_f0 = {0xff, 0xff},
+		.v_blank_f1 = {0xff, 0xff},
+		.h_sync_start = {0x56, 0x00},
+		.h_sync_end = {0x82, 0x00},
+		.v_sync_line_bef_2 = {0x09, 0x00},
+		.v_sync_line_bef_1 = {0x04, 0x00},
+		.v_sync_line_aft_2 = {0xff, 0xff},
+		.v_sync_line_aft_1 = {0xff, 0xff},
+		.v_sync_line_aft_pxl_2 = {0xff, 0xff},
+		.v_sync_line_aft_pxl_1 = {0xff, 0xff},
+		.v_blank_f2 = {0xff, 0xff},
+		.v_blank_f3 = {0xff, 0xff},
+		.v_blank_f4 = {0xff, 0xff},
+		.v_blank_f5 = {0xff, 0xff},
+		.v_sync_line_aft_3 = {0xff, 0xff},
+		.v_sync_line_aft_4 = {0xff, 0xff},
+		.v_sync_line_aft_5 = {0xff, 0xff},
+		.v_sync_line_aft_6 = {0xff, 0xff},
+		.v_sync_line_aft_pxl_3 = {0xff, 0xff},
+		.v_sync_line_aft_pxl_4 = {0xff, 0xff},
+		.v_sync_line_aft_pxl_5 = {0xff, 0xff},
+		.v_sync_line_aft_pxl_6 = {0xff, 0xff},
+		.vact_space_1 = {0xff, 0xff},
+		.vact_space_2 = {0xff, 0xff},
+		.vact_space_3 = {0xff, 0xff},
+		.vact_space_4 = {0xff, 0xff},
+		.vact_space_5 = {0xff, 0xff},
+		.vact_space_6 = {0xff, 0xff},
+		/* other don't care */
+	},
+	.tg = {
+		0x00, /* cmd */
+		0x98, 0x08, /* h_fsz */
+		0x18, 0x01, 0x80, 0x07, /* hact */
+		0x65, 0x04, /* v_fsz */
+		0x01, 0x00, 0x33, 0x02, /* vsync */
+		0x2d, 0x00, 0x38, 0x04, /* vact */
+		0x33, 0x02, /* field_chg */
+		0x48, 0x02, /* vact_st2 */
+		0x00, 0x00, /* vact_st3 */
+		0x00, 0x00, /* vact_st4 */
+		0x01, 0x00, 0x01, 0x00, /* vsync top/bot */
+		0x01, 0x00, 0x33, 0x02, /* field top/bot */
+		0x00, /* 3d FP */
+	},
+};
+
 static const struct hdmi_preset_conf hdmi_conf_1080p50 = {
 	.core = {
 		.h_blank = {0xd0, 0x02},
@@ -825,10 +929,7 @@ static const struct hdmi_conf hdmi_confs[] = {
 	{ 720, 480, 60, false, hdmiphy_conf27_027, &hdmi_conf_480p60 },
 	{ 1280, 720, 50, false, hdmiphy_conf74_25, &hdmi_conf_720p50 },
 	{ 1280, 720, 60, false, hdmiphy_conf74_25, &hdmi_conf_720p60 },
-	{ 1920, 1080, 50, true, hdmiphy_conf74_25, &hdmi_conf_1080i50 },
-	{ 1920, 1080, 60, true, hdmiphy_conf74_25, &hdmi_conf_1080i60 },
-	{ 1920, 1080, 50, false, hdmiphy_conf148_5, &hdmi_conf_1080p50 },
-	{ 1920, 1080, 60, false, hdmiphy_conf148_5, &hdmi_conf_1080p60 },
+	{ 1920, 1080, 30, false, hdmiphy_conf74_176, &hdmi_conf_1080p30 },
 };
 
 
@@ -1126,7 +1227,7 @@ static int hdmi_v13_conf_index(struct drm_display_mode *mode)
 				 true : false))
 			return i;
 
-	return -1;
+	return -EINVAL;
 }
 
 static int hdmi_v14_conf_index(struct drm_display_mode *mode)
@@ -1142,7 +1243,7 @@ static int hdmi_v14_conf_index(struct drm_display_mode *mode)
 				 true : false))
 			return i;
 
-	return -1;
+	return -EINVAL;
 }
 
 static int hdmi_conf_index(struct hdmi_context *hdata,
@@ -1150,26 +1251,22 @@ static int hdmi_conf_index(struct hdmi_context *hdata,
 {
 	if (hdata->is_v13)
 		return hdmi_v13_conf_index(mode);
-	else
-		return hdmi_v14_conf_index(mode);
+
+	return hdmi_v14_conf_index(mode);
 }
 
 static bool hdmi_is_connected(void *ctx)
 {
-	struct hdmi_context *hdata = (struct hdmi_context *)ctx;
-	u32 val = hdmi_reg_read(hdata, HDMI_HPD_STATUS);
+	struct hdmi_context *hdata = ctx;
 
-	if (val)
-		return true;
-
-	return false;
+	return hdata->hpd;
 }
 
 static int hdmi_get_edid(void *ctx, struct drm_connector *connector,
 				u8 *edid, int len)
 {
 	struct edid *raw_edid;
-	struct hdmi_context *hdata = (struct hdmi_context *)ctx;
+	struct hdmi_context *hdata = ctx;
 
 	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
 
@@ -1178,10 +1275,12 @@ static int hdmi_get_edid(void *ctx, struct drm_connector *connector,
 
 	raw_edid = drm_get_edid(connector, hdata->ddc_port->adapter);
 	if (raw_edid) {
+		hdata->dvi_mode = !drm_detect_hdmi_monitor(raw_edid);
 		memcpy(edid, raw_edid, min((1 + raw_edid->extensions)
 					* EDID_LENGTH, len));
-		DRM_DEBUG_KMS("width[%d] x height[%d]\n",
-				raw_edid->width_cm, raw_edid->height_cm);
+		DRM_DEBUG_KMS("%s : width[%d] x height[%d]\n",
+			(hdata->dvi_mode ? "dvi monitor" : "hdmi monitor"),
+			raw_edid->width_cm, raw_edid->height_cm);
 	} else {
 		return -ENODEV;
 	}
@@ -1193,6 +1292,11 @@ static int hdmi_v13_check_timing(struct fb_videomode *check_timing)
 {
 	int i;
 
+	DRM_DEBUG_KMS("valid mode : xres=%d, yres=%d, refresh=%d, intl=%d\n",
+			check_timing->xres, check_timing->yres,
+			check_timing->refresh, (check_timing->vmode &
+			FB_VMODE_INTERLACED) ? true : false);
+
 	for (i = 0; i < ARRAY_SIZE(hdmi_v13_confs); ++i)
 		if (hdmi_v13_confs[i].width == check_timing->xres &&
 			hdmi_v13_confs[i].height == check_timing->yres &&
@@ -1200,7 +1304,9 @@ static int hdmi_v13_check_timing(struct fb_videomode *check_timing)
 			hdmi_v13_confs[i].interlace ==
 			((check_timing->vmode & FB_VMODE_INTERLACED) ?
 			 true : false))
-			return 0;
+				return 0;
+
+	/* TODO */
 
 	return -EINVAL;
 }
@@ -1209,21 +1315,28 @@ static int hdmi_v14_check_timing(struct fb_videomode *check_timing)
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(hdmi_confs); ++i)
+	DRM_DEBUG_KMS("valid mode : xres=%d, yres=%d, refresh=%d, intl=%d\n",
+			check_timing->xres, check_timing->yres,
+			check_timing->refresh, (check_timing->vmode &
+			FB_VMODE_INTERLACED) ? true : false);
+
+	for (i = 0; i < ARRAY_SIZE(hdmi_confs); i++)
 		if (hdmi_confs[i].width == check_timing->xres &&
 			hdmi_confs[i].height == check_timing->yres &&
 			hdmi_confs[i].vrefresh == check_timing->refresh &&
 			hdmi_confs[i].interlace ==
 			((check_timing->vmode & FB_VMODE_INTERLACED) ?
 			 true : false))
-			return 0;
+				return 0;
+
+	/* TODO */
 
 	return -EINVAL;
 }
 
 static int hdmi_check_timing(void *ctx, void *timing)
 {
-	struct hdmi_context *hdata = (struct hdmi_context *)ctx;
+	struct hdmi_context *hdata = ctx;
 	struct fb_videomode *check_timing = timing;
 
 	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
@@ -1238,41 +1351,169 @@ static int hdmi_check_timing(void *ctx, void *timing)
 		return hdmi_v14_check_timing(check_timing);
 }
 
-static int hdmi_display_power_on(void *ctx, int mode)
+static void hdmi_set_acr(u32 freq, u8 *acr)
 {
-	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+	u32 n, cts;
 
-	switch (mode) {
-	case DRM_MODE_DPMS_ON:
-		DRM_DEBUG_KMS("hdmi [on]\n");
+	switch (freq) {
+	case 32000:
+		n = 4096;
+		cts = 27000;
 		break;
-	case DRM_MODE_DPMS_STANDBY:
+	case 44100:
+		n = 6272;
+		cts = 30000;
 		break;
-	case DRM_MODE_DPMS_SUSPEND:
+	case 88200:
+		n = 12544;
+		cts = 30000;
 		break;
-	case DRM_MODE_DPMS_OFF:
-		DRM_DEBUG_KMS("hdmi [off]\n");
+	case 176400:
+		n = 25088;
+		cts = 30000;
+		break;
+	case 48000:
+		n = 6144;
+		cts = 27000;
+		break;
+	case 96000:
+		n = 12288;
+		cts = 27000;
+		break;
+	case 192000:
+		n = 24576;
+		cts = 27000;
 		break;
 	default:
+		n = 0;
+		cts = 0;
 		break;
 	}
 
-	return 0;
+	acr[1] = cts >> 16;
+	acr[2] = cts >> 8 & 0xff;
+	acr[3] = cts & 0xff;
+
+	acr[4] = n >> 16;
+	acr[5] = n >> 8 & 0xff;
+	acr[6] = n & 0xff;
 }
 
-static struct exynos_hdmi_display_ops display_ops = {
-	.is_connected	= hdmi_is_connected,
-	.get_edid	= hdmi_get_edid,
-	.check_timing	= hdmi_check_timing,
-	.power_on	= hdmi_display_power_on,
-};
+static void hdmi_reg_acr(struct hdmi_context *hdata, u8 *acr)
+{
+	hdmi_reg_writeb(hdata, HDMI_ACR_N0, acr[6]);
+	hdmi_reg_writeb(hdata, HDMI_ACR_N1, acr[5]);
+	hdmi_reg_writeb(hdata, HDMI_ACR_N2, acr[4]);
+	hdmi_reg_writeb(hdata, HDMI_ACR_MCTS0, acr[3]);
+	hdmi_reg_writeb(hdata, HDMI_ACR_MCTS1, acr[2]);
+	hdmi_reg_writeb(hdata, HDMI_ACR_MCTS2, acr[1]);
+	hdmi_reg_writeb(hdata, HDMI_ACR_CTS0, acr[3]);
+	hdmi_reg_writeb(hdata, HDMI_ACR_CTS1, acr[2]);
+	hdmi_reg_writeb(hdata, HDMI_ACR_CTS2, acr[1]);
+
+	if (hdata->is_v13)
+		hdmi_reg_writeb(hdata, HDMI_V13_ACR_CON, 4);
+	else
+		hdmi_reg_writeb(hdata, HDMI_ACR_CON, 4);
+}
+
+static void hdmi_audio_init(struct hdmi_context *hdata)
+{
+	u32 sample_rate, bits_per_sample, frame_size_code;
+	u32 data_num, bit_ch, sample_frq;
+	u32 val;
+	u8 acr[7];
+
+	sample_rate = 44100;
+	bits_per_sample = 16;
+	frame_size_code = 0;
+
+	switch (bits_per_sample) {
+	case 20:
+		data_num = 2;
+		bit_ch  = 1;
+		break;
+	case 24:
+		data_num = 3;
+		bit_ch  = 1;
+		break;
+	default:
+		data_num = 1;
+		bit_ch  = 0;
+		break;
+	}
+
+	hdmi_set_acr(sample_rate, acr);
+	hdmi_reg_acr(hdata, acr);
+
+	hdmi_reg_writeb(hdata, HDMI_I2S_MUX_CON, HDMI_I2S_IN_DISABLE
+				| HDMI_I2S_AUD_I2S | HDMI_I2S_CUV_I2S_ENABLE
+				| HDMI_I2S_MUX_ENABLE);
+
+	hdmi_reg_writeb(hdata, HDMI_I2S_MUX_CH, HDMI_I2S_CH0_EN
+			| HDMI_I2S_CH1_EN | HDMI_I2S_CH2_EN);
+
+	hdmi_reg_writeb(hdata, HDMI_I2S_MUX_CUV, HDMI_I2S_CUV_RL_EN);
+
+	sample_frq = (sample_rate == 44100) ? 0 :
+			(sample_rate == 48000) ? 2 :
+			(sample_rate == 32000) ? 3 :
+			(sample_rate == 96000) ? 0xa : 0x0;
+
+	hdmi_reg_writeb(hdata, HDMI_I2S_CLK_CON, HDMI_I2S_CLK_DIS);
+	hdmi_reg_writeb(hdata, HDMI_I2S_CLK_CON, HDMI_I2S_CLK_EN);
+
+	val = hdmi_reg_read(hdata, HDMI_I2S_DSD_CON) | 0x01;
+	hdmi_reg_writeb(hdata, HDMI_I2S_DSD_CON, val);
+
+	/* Configuration I2S input ports. Configure I2S_PIN_SEL_0~4 */
+	hdmi_reg_writeb(hdata, HDMI_I2S_PIN_SEL_0, HDMI_I2S_SEL_SCLK(5)
+			| HDMI_I2S_SEL_LRCK(6));
+	hdmi_reg_writeb(hdata, HDMI_I2S_PIN_SEL_1, HDMI_I2S_SEL_SDATA1(1)
+			| HDMI_I2S_SEL_SDATA2(4));
+	hdmi_reg_writeb(hdata, HDMI_I2S_PIN_SEL_2, HDMI_I2S_SEL_SDATA3(1)
+			| HDMI_I2S_SEL_SDATA2(2));
+	hdmi_reg_writeb(hdata, HDMI_I2S_PIN_SEL_3, HDMI_I2S_SEL_DSD(0));
+
+	/* I2S_CON_1 & 2 */
+	hdmi_reg_writeb(hdata, HDMI_I2S_CON_1, HDMI_I2S_SCLK_FALLING_EDGE
+			| HDMI_I2S_L_CH_LOW_POL);
+	hdmi_reg_writeb(hdata, HDMI_I2S_CON_2, HDMI_I2S_MSB_FIRST_MODE
+			| HDMI_I2S_SET_BIT_CH(bit_ch)
+			| HDMI_I2S_SET_SDATA_BIT(data_num)
+			| HDMI_I2S_BASIC_FORMAT);
+
+	/* Configure register related to CUV information */
+	hdmi_reg_writeb(hdata, HDMI_I2S_CH_ST_0, HDMI_I2S_CH_STATUS_MODE_0
+			| HDMI_I2S_2AUD_CH_WITHOUT_PREEMPH
+			| HDMI_I2S_COPYRIGHT
+			| HDMI_I2S_LINEAR_PCM
+			| HDMI_I2S_CONSUMER_FORMAT);
+	hdmi_reg_writeb(hdata, HDMI_I2S_CH_ST_1, HDMI_I2S_CD_PLAYER);
+	hdmi_reg_writeb(hdata, HDMI_I2S_CH_ST_2, HDMI_I2S_SET_SOURCE_NUM(0));
+	hdmi_reg_writeb(hdata, HDMI_I2S_CH_ST_3, HDMI_I2S_CLK_ACCUR_LEVEL_2
+			| HDMI_I2S_SET_SMP_FREQ(sample_frq));
+	hdmi_reg_writeb(hdata, HDMI_I2S_CH_ST_4,
+			HDMI_I2S_ORG_SMP_FREQ_44_1
+			| HDMI_I2S_WORD_LEN_MAX24_24BITS
+			| HDMI_I2S_WORD_LEN_MAX_24BITS);
+
+	hdmi_reg_writeb(hdata, HDMI_I2S_CH_ST_CON, HDMI_I2S_CH_STATUS_RELOAD);
+}
+
+static void hdmi_audio_control(struct hdmi_context *hdata, bool onoff)
+{
+	if (hdata->dvi_mode)
+		return;
+
+	hdmi_reg_writeb(hdata, HDMI_AUI_CON, onoff ? 2 : 0);
+	hdmi_reg_writemask(hdata, HDMI_CON_0, onoff ?
+			HDMI_ASP_EN : HDMI_ASP_DIS, HDMI_ASP_MASK);
+}
 
 static void hdmi_conf_reset(struct hdmi_context *hdata)
 {
 	u32 reg;
-
-	/* disable hpd handle for drm */
-	hdata->hpd_handle = false;
 
 	if (hdata->is_v13)
 		reg = HDMI_V13_CORE_RSTOUT;
@@ -1284,16 +1525,10 @@ static void hdmi_conf_reset(struct hdmi_context *hdata)
 	mdelay(10);
 	hdmi_reg_writemask(hdata, reg, ~0, HDMI_CORE_SW_RSTOUT);
 	mdelay(10);
-
-	/* enable hpd handle for drm */
-	hdata->hpd_handle = true;
 }
 
 static void hdmi_conf_init(struct hdmi_context *hdata)
 {
-	/* disable hpd handle for drm */
-	hdata->hpd_handle = false;
-
 	/* enable HPD interrupts */
 	hdmi_reg_writemask(hdata, HDMI_INTC_CON, 0, HDMI_INTC_EN_GLOBAL |
 		HDMI_INTC_EN_HPD_PLUG | HDMI_INTC_EN_HPD_UNPLUG);
@@ -1306,6 +1541,14 @@ static void hdmi_conf_init(struct hdmi_context *hdata)
 		HDMI_MODE_HDMI_EN, HDMI_MODE_MASK);
 	/* disable bluescreen */
 	hdmi_reg_writemask(hdata, HDMI_CON_0, 0, HDMI_BLUE_SCR_EN);
+
+	if (hdata->dvi_mode) {
+		/* choose DVI mode */
+		hdmi_reg_writemask(hdata, HDMI_MODE_SEL,
+				HDMI_MODE_DVI_EN, HDMI_MODE_MASK);
+		hdmi_reg_writeb(hdata, HDMI_CON_2,
+				HDMI_VID_PREAMBLE_DIS | HDMI_GUARD_BAND_DIS);
+	}
 
 	if (hdata->is_v13) {
 		/* choose bluescreen (fecal) color */
@@ -1328,9 +1571,6 @@ static void hdmi_conf_init(struct hdmi_context *hdata)
 		hdmi_reg_writeb(hdata, HDMI_AVI_BYTE(1), 2 << 5);
 		hdmi_reg_writemask(hdata, HDMI_CON_1, 2, 3 << 5);
 	}
-
-	/* enable hpd handle for drm */
-	hdata->hpd_handle = true;
 }
 
 static void hdmi_v13_timing_apply(struct hdmi_context *hdata)
@@ -1598,6 +1838,104 @@ static void hdmi_timing_apply(struct hdmi_context *hdata)
 		hdmi_v14_timing_apply(hdata);
 }
 
+static int hdmi_phy_ctrl(struct i2c_client *client, u8 reg, u8 bit,
+		u8 *read_buffer, bool enable)
+{
+	int ret;
+	u8 operation[2];
+
+	operation[0] = reg;
+	operation[1] = enable ? (read_buffer[reg] & (~(1 << bit))) :
+			(read_buffer[reg] | (1 << bit));
+	read_buffer[reg] = operation[1];
+
+	ret = i2c_master_send(client, operation, 2);
+	if (ret != 2) {
+		DRM_ERROR("failed to turn %s HDMIPHY via I2C\n",
+			enable ? "enable" : "disable");
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int hdmi_phy_power_ctrl(struct hdmi_context *hdata, bool enable)
+{
+	struct hdmi_resources *res = &hdata->res;
+	u8 operation[2];
+	u8 read_buffer[32];
+	int ret = 0, i;
+
+	DRM_DEBUG_KMS("%s:enable[%d]\n", __func__, enable);
+
+	clk_enable(res->hdmiphy);
+
+	/* read full register */
+	operation[0] = 0x1;
+	i2c_master_send(hdata->hdmiphy_port, operation, 1);
+
+	memset(read_buffer, 0x0, sizeof(read_buffer));
+	ret = i2c_master_recv(hdata->hdmiphy_port, read_buffer, 32);
+	if (ret < 0) {
+		DRM_ERROR("failed to read hdmiphy config\n");
+		goto err_clear;
+	}
+
+	for (i = 0; i < ret; i++)
+		DRM_DEBUG_KMS("hdmiphy[0x%02x] write[0x%02x] - "
+			"recv [0x%02x]\n", i, operation[i], read_buffer[i]);
+
+	/* ocspad control */
+	operation[0] = 0x0b;
+	if (enable)
+		operation[1] = 0xd8;
+	else
+		operation[1] = 0x18;
+	read_buffer[0x0b] = operation[1];
+
+	ret = i2c_master_send(hdata->hdmiphy_port, operation, 2);
+	if (ret != 2) {
+		DRM_ERROR("failed to %s osc pad\n",
+			enable ? "enable" : "disable");
+		goto err_clear;
+	}
+
+	hdmi_phy_ctrl(hdata->hdmiphy_port, 0x1d, 0x7, read_buffer, enable);
+	hdmi_phy_ctrl(hdata->hdmiphy_port, 0x1d, 0x0, read_buffer, enable);
+	hdmi_phy_ctrl(hdata->hdmiphy_port, 0x1d, 0x1, read_buffer, enable);
+	hdmi_phy_ctrl(hdata->hdmiphy_port, 0x1d, 0x2, read_buffer, enable);
+	hdmi_phy_ctrl(hdata->hdmiphy_port, 0x1d, 0x4, read_buffer, enable);
+	hdmi_phy_ctrl(hdata->hdmiphy_port, 0x1d, 0x5, read_buffer, enable);
+	hdmi_phy_ctrl(hdata->hdmiphy_port, 0x1d, 0x6, read_buffer, enable);
+
+	if (!enable)
+		hdmi_phy_ctrl(hdata->hdmiphy_port, 0x4, 0x3, read_buffer, 0);
+
+	/* read full register */
+	operation[0] = 0x1;
+	i2c_master_send(hdata->hdmiphy_port, operation, 1);
+
+	memset(read_buffer, 0x0, sizeof(read_buffer));
+	ret = i2c_master_recv(hdata->hdmiphy_port, read_buffer, 32);
+	if (ret < 0) {
+		DRM_ERROR("failed to read hdmiphy config\n");
+		goto err_clear;
+	}
+
+	for (i = 0; i < ret; i++)
+		DRM_DEBUG_KMS("hdmiphy[0x%02x] write[0x%02x] - "
+			"recv [0x%02x]\n", i, operation[i], read_buffer[i]);
+
+	clk_disable(res->hdmiphy);
+
+	return 0;
+
+err_clear:
+	clk_disable(res->hdmiphy);
+
+	return ret;
+}
+
 static void hdmiphy_conf_reset(struct hdmi_context *hdata)
 {
 	u8 buffer[2];
@@ -1683,18 +2021,63 @@ static void hdmi_conf_apply(struct hdmi_context *hdata)
 	hdmiphy_conf_reset(hdata);
 	hdmiphy_conf_apply(hdata);
 
+	mutex_lock(&hdata->hdmi_mutex);
 	hdmi_conf_reset(hdata);
 	hdmi_conf_init(hdata);
+	mutex_unlock(&hdata->hdmi_mutex);
+
+	hdmi_audio_init(hdata);
 
 	/* setting core registers */
 	hdmi_timing_apply(hdata);
+	hdmi_audio_control(hdata, true);
 
 	hdmi_regs_dump(hdata, "start");
 }
 
+static void hdmi_mode_fixup(void *ctx, struct drm_connector *connector,
+				struct drm_display_mode *mode,
+				struct drm_display_mode *adjusted_mode)
+{
+	struct drm_display_mode *m;
+	struct hdmi_context *hdata = ctx;
+	int index;
+
+	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+
+	drm_mode_set_crtcinfo(adjusted_mode, 0);
+
+	if (hdata->is_v13)
+		index = hdmi_v13_conf_index(adjusted_mode);
+	else
+		index = hdmi_v14_conf_index(adjusted_mode);
+
+	/* just return if user desired mode exists. */
+	if (index >= 0)
+		return;
+
+	/*
+	 * otherwise, find the most suitable mode among modes and change it
+	 * to adjusted_mode.
+	 */
+	list_for_each_entry(m, &connector->modes, head) {
+		if (hdata->is_v13)
+			index = hdmi_v13_conf_index(m);
+		else
+			index = hdmi_v14_conf_index(m);
+
+		if (index >= 0) {
+			DRM_INFO("desired mode doesn't exist so\n");
+			DRM_INFO("use the most suitable mode among modes.\n");
+			memcpy(adjusted_mode, m, sizeof(*m));
+			break;
+		}
+	}
+}
+
 static void hdmi_mode_set(void *ctx, void *mode)
 {
-	struct hdmi_context *hdata = (struct hdmi_context *)ctx;
+	struct hdmi_context *hdata = ctx;
 	int conf_idx;
 
 	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
@@ -1706,75 +2089,259 @@ static void hdmi_mode_set(void *ctx, void *mode)
 		DRM_DEBUG_KMS("not supported mode\n");
 }
 
+static void hdmi_get_max_resol(void *ctx, unsigned int *width,
+					unsigned int *height)
+{
+	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+
+	*width = MAX_WIDTH;
+	*height = MAX_HEIGHT;
+}
+
 static void hdmi_commit(void *ctx)
 {
-	struct hdmi_context *hdata = (struct hdmi_context *)ctx;
+	struct hdmi_context *hdata = ctx;
+	struct exynos_drm_private *drm_priv;
+	struct exynos_drm_hdmi_context *drm_hdmi_ctx;
+	struct drm_device *drm_dev;
 
 	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
 
 	hdmi_conf_apply(hdata);
 
-	hdata->enabled = true;
-}
+	/*
+	 * parent_ctx is created at hdmi_probe() and
+	 * parent_ctx->drm_dev is set at hdmi_subdrv_probe()
+	 */
+	drm_hdmi_ctx = hdata->parent_ctx;
+	drm_dev = drm_hdmi_ctx->drm_dev;
+	if (drm_dev)
+		drm_priv = drm_dev->dev_private;
+	else
+		return;
 
-static void hdmi_clear_win(struct hdmi_context *hdata, int win)
-{
-	/* TODO. */
-}
+	/*
+	 * if iommu support for exynos drm was enabled, this function is
+	 * called first time(!hdata->iommu_on) then enable iommu unit.
+	 */
+	if (drm_priv->vmm && !hdata->iommu_on) {
+		int ret;
 
-static void hdmi_disable(void *ctx)
-{
-	struct hdmi_context *hdata = (struct hdmi_context *)ctx;
+		ret = exynos_drm_iommu_activate(drm_priv->vmm, hdata->dev);
+		if (ret < 0) {
+			DRM_ERROR("failed to activate iommu.\n");
+			return;
+		}
 
-	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
-
-	if (hdata->enabled) {
-		hdmiphy_conf_reset(hdata);
-		hdmi_conf_reset(hdata);
+		hdata->iommu_on = true;
 	}
 }
 
-static struct exynos_hdmi_manager_ops manager_ops = {
-	.mode_set	= hdmi_mode_set,
-	.commit		= hdmi_commit,
-	.disable	= hdmi_disable,
-};
-
-/*
- * Handle hotplug events outside the interrupt handler proper.
- */
-static void hdmi_hotplug_func(struct work_struct *work)
+static void hdmi_poweron(struct hdmi_context *hdata)
 {
-	struct hdmi_context *hdata =
-		container_of(work, struct hdmi_context, hotplug_work);
-	struct exynos_drm_hdmi_context *ctx =
-		(struct exynos_drm_hdmi_context *)hdata->parent_ctx;
+	struct hdmi_resources *res = &hdata->res;
+	int ret;
 
-	drm_helper_hpd_irq_event(ctx->drm_dev);
+	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+
+	mutex_lock(&hdata->hdmi_mutex);
+	if (hdata->powered) {
+		mutex_unlock(&hdata->hdmi_mutex);
+		return;
+	}
+
+	hdata->powered = true;
+
+	if (hdata->cfg_hpd)
+		hdata->cfg_hpd(true);
+	mutex_unlock(&hdata->hdmi_mutex);
+
+	pm_runtime_get_sync(hdata->dev);
+
+	ret = hdmi_phy_power_ctrl(hdata, true);
+	if (ret) {
+		DRM_ERROR("failed to control phy power\n");
+		return;
+	}
+
+	if (hdata->iommu_on) {
+		struct exynos_drm_private *drm_priv;
+		struct exynos_drm_hdmi_context *drm_hdmi_ctx;
+		struct drm_device *drm_dev;
+
+		drm_hdmi_ctx = hdata->parent_ctx;
+		drm_dev = drm_hdmi_ctx->drm_dev;
+
+		if (drm_dev)
+			drm_priv = drm_dev->dev_private;
+		else
+			return;
+
+		ret = exynos_drm_iommu_activate(drm_priv->vmm, hdata->dev);
+		if (ret < 0) {
+			DRM_ERROR("failed to activate iommu.\n");
+			return;
+		}
+	}
+
+	regulator_bulk_enable(res->regul_count, res->regul_bulk);
+	clk_enable(res->hdmiphy);
+	clk_enable(res->hdmi);
+	clk_enable(res->sclk_hdmi);
 }
 
-static irqreturn_t hdmi_irq_handler(int irq, void *arg)
+static void hdmi_poweroff(struct hdmi_context *hdata)
+{
+	struct hdmi_resources *res = &hdata->res;
+	int ret;
+
+	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+
+	mutex_lock(&hdata->hdmi_mutex);
+	if (!hdata->powered)
+		goto out;
+	mutex_unlock(&hdata->hdmi_mutex);
+
+	/*
+	 * The TV power domain needs any condition of hdmiphy to turn off and
+	 * its reset state seems to meet the condition.
+	 */
+	hdmiphy_conf_reset(hdata);
+
+	clk_disable(res->sclk_hdmi);
+	clk_disable(res->hdmi);
+	clk_disable(res->hdmiphy);
+	regulator_bulk_disable(res->regul_count, res->regul_bulk);
+
+	mutex_lock(&hdata->hdmi_mutex);
+	if (hdata->cfg_hpd)
+		hdata->cfg_hpd(false);
+
+	ret = hdmi_phy_power_ctrl(hdata, false);
+	if (ret) {
+		DRM_ERROR("failed to control phy power\n");
+		return;
+	}
+
+	if (hdata->iommu_on) {
+		struct exynos_drm_private *drm_priv;
+		struct exynos_drm_hdmi_context *drm_hdmi_ctx;
+		struct drm_device *drm_dev;
+
+		drm_hdmi_ctx = hdata->parent_ctx;
+		drm_dev = drm_hdmi_ctx->drm_dev;
+		if (drm_dev)
+			drm_priv = drm_dev->dev_private;
+		else {
+			if (hdata->cfg_hpd)
+				hdata->cfg_hpd(true);
+
+			regulator_bulk_enable(res->regul_count,
+						res->regul_bulk);
+
+			clk_enable(res->hdmiphy);
+			clk_enable(res->hdmi);
+			clk_enable(res->sclk_hdmi);
+
+			mutex_unlock(&hdata->hdmi_mutex);
+			return;
+		}
+
+		exynos_drm_iommu_deactivate(drm_priv->vmm, hdata->dev);
+	}
+
+	hdata->powered = false;
+
+out:
+	mutex_unlock(&hdata->hdmi_mutex);
+	pm_runtime_put_sync(hdata->dev);
+}
+
+static void hdmi_dpms(void *ctx, int mode)
+{
+	struct hdmi_context *hdata = ctx;
+
+	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
+
+	switch (mode) {
+	case DRM_MODE_DPMS_ON:
+		hdmi_poweron(hdata);
+		break;
+	case DRM_MODE_DPMS_STANDBY:
+	case DRM_MODE_DPMS_SUSPEND:
+	case DRM_MODE_DPMS_OFF:
+		hdmi_poweroff(hdata);
+		break;
+	default:
+		DRM_DEBUG_KMS("unknown dpms mode: %d\n", mode);
+		break;
+	}
+}
+
+static struct exynos_hdmi_ops hdmi_ops = {
+	/* display */
+	.is_connected	= hdmi_is_connected,
+	.get_edid	= hdmi_get_edid,
+	.check_timing	= hdmi_check_timing,
+
+	/* manager */
+	.mode_fixup	= hdmi_mode_fixup,
+	.mode_set	= hdmi_mode_set,
+	.get_max_resol	= hdmi_get_max_resol,
+	.commit		= hdmi_commit,
+	.dpms		= hdmi_dpms,
+};
+
+static irqreturn_t hdmi_external_irq_thread(int irq, void *arg)
 {
 	struct exynos_drm_hdmi_context *ctx = arg;
-	struct hdmi_context *hdata = (struct hdmi_context *)ctx->ctx;
+	struct hdmi_context *hdata = ctx->ctx;
+
+	if (!hdata->get_hpd)
+		goto out;
+
+	mutex_lock(&hdata->hdmi_mutex);
+	hdata->hpd = hdata->get_hpd();
+	mutex_unlock(&hdata->hdmi_mutex);
+
+	if (ctx->drm_dev)
+		drm_helper_hpd_irq_event(ctx->drm_dev);
+
+out:
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t hdmi_internal_irq_thread(int irq, void *arg)
+{
+	struct exynos_drm_hdmi_context *ctx = arg;
+	struct hdmi_context *hdata = ctx->ctx;
 	u32 intc_flag;
 
 	intc_flag = hdmi_reg_read(hdata, HDMI_INTC_FLAG);
 	/* clearing flags for HPD plug/unplug */
 	if (intc_flag & HDMI_INTC_FLAG_HPD_UNPLUG) {
-		DRM_DEBUG_KMS("unplugged, handling:%d\n", hdata->hpd_handle);
+		DRM_DEBUG_KMS("unplugged\n");
 		hdmi_reg_writemask(hdata, HDMI_INTC_FLAG, ~0,
 			HDMI_INTC_FLAG_HPD_UNPLUG);
 	}
 	if (intc_flag & HDMI_INTC_FLAG_HPD_PLUG) {
-		DRM_DEBUG_KMS("plugged, handling:%d\n", hdata->hpd_handle);
+		DRM_DEBUG_KMS("plugged\n");
 		hdmi_reg_writemask(hdata, HDMI_INTC_FLAG, ~0,
 			HDMI_INTC_FLAG_HPD_PLUG);
 	}
 
-	if (ctx->drm_dev && hdata->hpd_handle)
-		queue_work(hdata->wq, &hdata->hotplug_work);
+	mutex_lock(&hdata->hdmi_mutex);
+	hdata->hpd = hdmi_reg_read(hdata, HDMI_HPD_STATUS);
+	if (hdata->powered && hdata->hpd) {
+		mutex_unlock(&hdata->hdmi_mutex);
+		goto out;
+	}
+	mutex_unlock(&hdata->hdmi_mutex);
 
+	if (ctx->drm_dev)
+		drm_helper_hpd_irq_event(ctx->drm_dev);
+
+out:
 	return IRQ_HANDLED;
 }
 
@@ -1869,61 +2436,6 @@ static int hdmi_resources_cleanup(struct hdmi_context *hdata)
 	return 0;
 }
 
-static void hdmi_resource_poweron(struct hdmi_context *hdata)
-{
-	struct hdmi_resources *res = &hdata->res;
-
-	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
-
-	/* turn HDMI power on */
-	regulator_bulk_enable(res->regul_count, res->regul_bulk);
-	/* power-on hdmi physical interface */
-	clk_enable(res->hdmiphy);
-	/* turn clocks on */
-	clk_enable(res->hdmi);
-	clk_enable(res->sclk_hdmi);
-
-	hdmiphy_conf_reset(hdata);
-	hdmi_conf_reset(hdata);
-	hdmi_conf_init(hdata);
-}
-
-static void hdmi_resource_poweroff(struct hdmi_context *hdata)
-{
-	struct hdmi_resources *res = &hdata->res;
-
-	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
-
-	/* turn clocks off */
-	clk_disable(res->sclk_hdmi);
-	clk_disable(res->hdmi);
-	/* power-off hdmiphy */
-	clk_disable(res->hdmiphy);
-	/* turn HDMI power off */
-	regulator_bulk_disable(res->regul_count, res->regul_bulk);
-}
-
-static int hdmi_runtime_suspend(struct device *dev)
-{
-	DRM_DEBUG_KMS("%s\n", __func__);
-	/* TODO */
-
-	return 0;
-}
-
-static int hdmi_runtime_resume(struct device *dev)
-{
-	DRM_DEBUG_KMS("%s\n", __func__);
-	/* TODO */
-
-	return 0;
-}
-
-static const struct dev_pm_ops hdmi_pm_ops = {
-	.runtime_suspend = hdmi_runtime_suspend,
-	.runtime_resume	 = hdmi_runtime_resume,
-};
-
 static struct i2c_client *hdmi_ddc, *hdmi_hdmiphy;
 
 void hdmi_attach_ddc_client(struct i2c_client *ddc)
@@ -1945,7 +2457,6 @@ static int __devinit hdmi_probe(struct platform_device *pdev)
 	struct hdmi_context *hdata;
 	struct exynos_drm_hdmi_pdata *pdata;
 	struct resource *res;
-	int win;
 	int ret;
 
 	DRM_DEBUG_KMS("[%d]\n", __LINE__);
@@ -1969,15 +2480,16 @@ static int __devinit hdmi_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
+	mutex_init(&hdata->hdmi_mutex);
+
 	drm_hdmi_ctx->ctx = (void *)hdata;
 	hdata->parent_ctx = (void *)drm_hdmi_ctx;
 
 	platform_set_drvdata(pdev, drm_hdmi_ctx);
 
 	hdata->is_v13 = pdata->is_v13;
-	hdata->default_win = pdata->default_win;
-	hdata->default_timing = &pdata->timing;
-	hdata->default_bpp = pdata->bpp;
+	hdata->cfg_hpd = pdata->cfg_hpd;
+	hdata->get_hpd = pdata->get_hpd;
 	hdata->dev = dev;
 
 	ret = hdmi_resources_init(hdata);
@@ -2026,50 +2538,60 @@ static int __devinit hdmi_probe(struct platform_device *pdev)
 
 	hdata->hdmiphy_port = hdmi_hdmiphy;
 
-	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (res == NULL) {
-		DRM_ERROR("get interrupt resource failed.\n");
-		ret = -ENXIO;
-		goto err_hdmiphy;
-	}
-
-	/* create workqueue and hotplug work */
-	hdata->wq = alloc_workqueue("exynos-drm-hdmi",
-			WQ_UNBOUND | WQ_NON_REENTRANT, 1);
-	if (hdata->wq == NULL) {
-		DRM_ERROR("Failed to create workqueue.\n");
-		ret = -ENOMEM;
-		goto err_hdmiphy;
-	}
-	INIT_WORK(&hdata->hotplug_work, hdmi_hotplug_func);
-
-	/* register hpd interrupt */
-	ret = request_irq(res->start, hdmi_irq_handler, 0, "drm_hdmi",
-				drm_hdmi_ctx);
+	/*
+	 * HDMI PHY power off
+	 * HDMI PHY is on as default configuration
+	 * So, HDMI PHY must be turned off if it's not used
+	 */
+	ret = hdmi_phy_power_ctrl(hdata, false);
 	if (ret) {
-		DRM_ERROR("request interrupt failed.\n");
-		goto err_workqueue;
+		DRM_ERROR("failed to control phy power\n");
+		goto err_hdmiphy;
 	}
-	hdata->irq = res->start;
+
+	hdata->external_irq = platform_get_irq_byname(pdev, "external_irq");
+	if (hdata->external_irq < 0) {
+		DRM_ERROR("failed to get platform irq\n");
+		ret = hdata->external_irq;
+		goto err_hdmiphy;
+	}
+
+	hdata->internal_irq = platform_get_irq_byname(pdev, "internal_irq");
+	if (hdata->internal_irq < 0) {
+		DRM_ERROR("failed to get platform internal irq\n");
+		ret = hdata->internal_irq;
+		goto err_hdmiphy;
+	}
+
+	ret = request_threaded_irq(hdata->external_irq, NULL,
+			hdmi_external_irq_thread, IRQF_TRIGGER_RISING |
+			IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+			"hdmi_external", drm_hdmi_ctx);
+	if (ret) {
+		DRM_ERROR("failed to register hdmi internal interrupt\n");
+		goto err_hdmiphy;
+	}
+
+	if (hdata->cfg_hpd)
+		hdata->cfg_hpd(false);
+
+	ret = request_threaded_irq(hdata->internal_irq, NULL,
+			hdmi_internal_irq_thread, IRQF_ONESHOT,
+			"hdmi_internal", drm_hdmi_ctx);
+	if (ret) {
+		DRM_ERROR("failed to register hdmi internal interrupt\n");
+		goto err_free_irq;
+	}
 
 	/* register specific callbacks to common hdmi. */
-	exynos_drm_display_ops_register(&display_ops);
-	exynos_drm_manager_ops_register(&manager_ops);
+	exynos_hdmi_ops_register(&hdmi_ops);
 
-	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
-	pm_runtime_get_sync(dev);
-
-	/* clear win registers */
-	for (win = 0; win < HDMI_OVERLAY_NUMBER; win++)
-		hdmi_clear_win(hdata, win);
-
-	hdmi_resource_poweron(hdata);
 
 	return 0;
 
-err_workqueue:
-	destroy_workqueue(hdata->wq);
+err_free_irq:
+	free_irq(hdata->external_irq, drm_hdmi_ctx);
 err_hdmiphy:
 	i2c_del_driver(&hdmiphy_driver);
 err_ddc:
@@ -2077,8 +2599,8 @@ err_ddc:
 err_iomap:
 	iounmap(hdata->regs);
 err_req_region:
-	release_resource(hdata->regs_res);
-	kfree(hdata->regs_res);
+	release_mem_region(hdata->regs_res->start,
+			resource_size(hdata->regs_res));
 err_resource:
 	hdmi_resources_cleanup(hdata);
 err_data:
@@ -2091,27 +2613,20 @@ static int __devexit hdmi_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct exynos_drm_hdmi_context *ctx = platform_get_drvdata(pdev);
-	struct hdmi_context *hdata = (struct hdmi_context *)ctx->ctx;
+	struct hdmi_context *hdata = ctx->ctx;
 
 	DRM_DEBUG_KMS("[%d] %s\n", __LINE__, __func__);
 
-	hdmi_resource_poweroff(hdata);
-
-	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
 
-	disable_irq(hdata->irq);
-	free_irq(hdata->irq, hdata);
-
-	cancel_work_sync(&hdata->hotplug_work);
-	destroy_workqueue(hdata->wq);
+	free_irq(hdata->internal_irq, hdata);
 
 	hdmi_resources_cleanup(hdata);
 
 	iounmap(hdata->regs);
 
-	release_resource(hdata->regs_res);
-	kfree(hdata->regs_res);
+	release_mem_region(hdata->regs_res->start,
+			resource_size(hdata->regs_res));
 
 	/* hdmiphy i2c driver */
 	i2c_del_driver(&hdmiphy_driver);
@@ -2119,9 +2634,41 @@ static int __devexit hdmi_remove(struct platform_device *pdev)
 	i2c_del_driver(&ddc_driver);
 
 	kfree(hdata);
+	kfree(ctx);
 
 	return 0;
 }
+
+#ifdef CONFIG_PM_SLEEP
+static int hdmi_suspend(struct device *dev)
+{
+	struct exynos_drm_hdmi_context *ctx = get_hdmi_context(dev);
+	struct hdmi_context *hdata = ctx->ctx;
+
+	disable_irq(hdata->internal_irq);
+	disable_irq(hdata->external_irq);
+
+	hdata->hpd = false;
+	if (ctx->drm_dev)
+		drm_helper_hpd_irq_event(ctx->drm_dev);
+
+	hdmi_poweroff(hdata);
+
+	return 0;
+}
+
+static int hdmi_resume(struct device *dev)
+{
+	struct exynos_drm_hdmi_context *ctx = get_hdmi_context(dev);
+	struct hdmi_context *hdata = ctx->ctx;
+
+	enable_irq(hdata->external_irq);
+	enable_irq(hdata->internal_irq);
+	return 0;
+}
+#endif
+
+static SIMPLE_DEV_PM_OPS(hdmi_pm_ops, hdmi_suspend, hdmi_resume);
 
 struct platform_driver hdmi_driver = {
 	.probe		= hdmi_probe,
@@ -2129,13 +2676,6 @@ struct platform_driver hdmi_driver = {
 	.driver		= {
 		.name	= "exynos4-hdmi",
 		.owner	= THIS_MODULE,
-		.pm = &hdmi_pm_ops,
+		.pm	= &hdmi_pm_ops,
 	},
 };
-EXPORT_SYMBOL(hdmi_driver);
-
-MODULE_AUTHOR("Seung-Woo Kim, <sw0312.kim@samsung.com>");
-MODULE_AUTHOR("Inki Dae <inki.dae@samsung.com>");
-MODULE_AUTHOR("Joonyoung Shim <jy0922.shim@samsung.com>");
-MODULE_DESCRIPTION("Samsung DRM HDMI core Driver");
-MODULE_LICENSE("GPL");

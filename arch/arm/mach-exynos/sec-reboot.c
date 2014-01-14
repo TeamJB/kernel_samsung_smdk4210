@@ -8,10 +8,9 @@
 
 /* charger cable state */
 extern bool is_cable_attached;
-#ifdef CONFIG_MACH_U1_NA_SPR
-static void cdma_wimax_chk_modem_pwroff(void);
+#ifdef CONFIG_MACH_GC1
+extern bool is_jig_attached;
 #endif
-
 static void sec_power_off(void)
 {
 	int poweroff_try = 0;
@@ -19,14 +18,18 @@ static void sec_power_off(void)
 	local_irq_disable();
 
 	pr_emerg("%s : cable state=%d\n", __func__, is_cable_attached);
+#ifdef CONFIG_MACH_GC1
+	pr_emerg("%s : jig state=%d\n", __func__, is_jig_attached);
+#endif
 
 	while (1) {
-
-#ifdef CONFIG_MACH_U1_NA_SPR
-		cdma_wimax_chk_modem_pwroff();
-#endif
 		/* Check reboot charging */
+#ifdef CONFIG_MACH_GC1
+		if (is_jig_attached || is_cable_attached
+			|| (poweroff_try >= 5)) {
+#else
 		if (is_cable_attached || (poweroff_try >= 5)) {
+#endif
 			pr_emerg
 			    ("%s: charger connected(%d) or power"
 			     "off failed(%d), reboot!\n",
@@ -70,46 +73,14 @@ static void sec_power_off(void)
 #define REBOOT_MODE_UPLOAD	2
 #define REBOOT_MODE_CHARGING	3
 #define REBOOT_MODE_RECOVERY	4
-#define REBOOT_MODE_ARM11_FOTA	5
-#if defined(CONFIG_TARGET_LOCALE_NA)
-#define REBOOT_MODE_ARM9_FOTA	6
-#endif
+#define REBOOT_MODE_FOTA	5
+#define REBOOT_MODE_FOTA_BL	6	/* update bootloader */
+#define REBOOT_MODE_SECURE	7	/* image secure check fail */
 
 #define REBOOT_SET_PREFIX	0xabc00000
 #define REBOOT_SET_DEBUG	0x000d0000
 #define REBOOT_SET_SWSEL	0x000e0000
 #define REBOOT_SET_SUD		0x000f0000
-
-#ifdef CONFIG_MACH_U1_NA_SPR
-static void cdma_wimax_chk_modem_pwroff(void)
-{
-	int phone_wait_cnt = 0;
-
-	pr_emerg("%s\n", __func__);
-
-	/* phone power off */
-	gpio_direction_output(GPIO_QSC_PHONE_ON, GPIO_LEVEL_LOW);
-
-	/*  confirm phone off */
-	while (1) {
-		if (gpio_get_value(GPIO_QSC_PHONE_ACTIVE)) {
-			printk(KERN_ALERT"Try to Turn Phone Off by CP_RST\n");
-			gpio_set_value(GPIO_QSC_PHONE_RST, 0);
-			if (phone_wait_cnt > 10) {
-				pr_emerg("%s: PHONE OFF Failed\n", __func__);
-				break;
-			}
-			phone_wait_cnt++;
-			mdelay(100);
-		} else {
-			pr_emerg("%s: PHONE OFF Success\n", __func__);
-			break;
-		}
-	}
-
-
-}
-#endif
 
 static void sec_reboot(char str, const char *cmd)
 {
@@ -124,13 +95,14 @@ static void sec_reboot(char str, const char *cmd)
 	} else {
 		unsigned long value;
 		if (!strcmp(cmd, "fota"))
-			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_ARM11_FOTA,
+			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_FOTA,
+					S5P_INFORM3);
+		else if (!strcmp(cmd, "arm11_fota"))
+			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_FOTA,
+					S5P_INFORM3);
+		else if (!strcmp(cmd, "fota_bl"))
+			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_FOTA_BL,
 			       S5P_INFORM3);
-#if defined(CONFIG_TARGET_LOCALE_NA)
-		else if (!strcmp(cmd, "arm9_fota"))
-			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_ARM9_FOTA,
-			       S5P_INFORM3);
-#endif
 		else if (!strcmp(cmd, "recovery"))
 			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_RECOVERY,
 			       S5P_INFORM3);
@@ -139,6 +111,9 @@ static void sec_reboot(char str, const char *cmd)
 			       S5P_INFORM3);
 		else if (!strcmp(cmd, "upload"))
 			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_UPLOAD,
+			       S5P_INFORM3);
+		else if (!strcmp(cmd, "secure"))
+			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_SECURE,
 			       S5P_INFORM3);
 		else if (!strncmp(cmd, "debug", 5)
 			 && !kstrtoul(cmd + 5, 0, &value))
@@ -152,6 +127,8 @@ static void sec_reboot(char str, const char *cmd)
 			 && !kstrtoul(cmd + 3, 0, &value))
 			writel(REBOOT_SET_PREFIX | REBOOT_SET_SUD | value,
 			       S5P_INFORM3);
+		else if (!strncmp(cmd, "emergency", 9))
+			writel(0, S5P_INFORM3);
 		else
 			writel(REBOOT_MODE_PREFIX | REBOOT_MODE_NONE,
 			       S5P_INFORM3);

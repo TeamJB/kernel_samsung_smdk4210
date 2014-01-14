@@ -408,13 +408,14 @@ static int __devinit mshci_s3c_probe(struct platform_device *pdev)
 				if (parent_clk) {
 #ifdef CONFIG_EXYNOS4_MSHC_EPLL_45MHZ
 					if (!strcmp("fout_epll", \
-							parent_clk->name)) {
-						clk_set_rate \
+						parent_clk->name) &&
+						soc_is_exynos4210()) {
+							clk_set_rate \
 							(parent_clk, 180633600);
 						pdata->cfg_ddr(pdev, 0);
 #elif defined(CONFIG_EXYNOS4_MSHC_VPLL_46MHZ)
 					if (!strcmp("fout_vpll", \
-							parent_clk->name)) {
+						parent_clk->name)) {
 						clk_set_rate \
 							(parent_clk, 370882812);
 						pdata->cfg_ddr(pdev, 0);
@@ -460,7 +461,7 @@ static int __devinit mshci_s3c_probe(struct platform_device *pdev)
 	if (!host->ioaddr) {
 		dev_err(dev, "failed to map registers\n");
 		ret = -ENXIO;
-		goto err_req_regs;
+		goto err_add_host;
 	}
 
 	/* Ensure we have minimal gpio selected CMD/CLK/Detect */
@@ -487,6 +488,13 @@ static int __devinit mshci_s3c_probe(struct platform_device *pdev)
 	if (pdata->cd_type == S3C_MSHCI_CD_PERMANENT) {
 		host->quirks |= MSHCI_QUIRK_BROKEN_PRESENT_BIT;
 		host->mmc->caps |= MMC_CAP_NONREMOVABLE;
+		if (pdata->int_power_gpio) {
+			gpio_set_value(pdata->int_power_gpio, 1);
+			s3c_gpio_cfgpin(pdata->int_power_gpio,
+					S3C_GPIO_OUTPUT);
+			s3c_gpio_setpull(pdata->int_power_gpio,
+					S3C_GPIO_PULL_NONE);
+		}
 	}
 
 	/* IF SD controller's WP pin donsn't connected with SD card and there
@@ -503,7 +511,12 @@ static int __devinit mshci_s3c_probe(struct platform_device *pdev)
 	if (pdata->cd_type == S3C_MSHCI_CD_GPIO &&
 		gpio_is_valid(pdata->ext_cd_gpio)) {
 
-		gpio_request(pdata->ext_cd_gpio, "SDHCI EXT CD");
+		ret = gpio_request(pdata->ext_cd_gpio, "MSHCI EXT CD");
+		if (ret) {
+			dev_err(&pdev->dev, "cannot request gpio for card detect\n");
+			goto err_add_host;
+		}
+
 		sc->ext_cd_gpio = pdata->ext_cd_gpio;
 
 		sc->ext_cd_irq = gpio_to_irq(pdata->ext_cd_gpio);
@@ -523,11 +536,15 @@ static int __devinit mshci_s3c_probe(struct platform_device *pdev)
 		dev_err(dev, "mshci_add_host() failed\n");
 		goto err_add_host;
 	}
+
+	device_enable_async_suspend(dev);
+
 	return 0;
 
  err_add_host:
-	release_resource(sc->ioarea);
-	kfree(sc->ioarea);
+	if (host->ioaddr)
+		iounmap(host->ioaddr);
+	release_mem_region(sc->ioarea->start, resource_size(sc->ioarea));
 
  err_req_regs:
 	for (ptr = 0; ptr < MAX_BUS_CLK; ptr++) {
@@ -614,7 +631,11 @@ static void __exit mshci_s3c_exit(void)
 	platform_driver_unregister(&mshci_s3c_driver);
 }
 
+#ifdef CONFIG_FAST_RESUME
+beforeresume_initcall(mshci_s3c_init);
+#else
 module_init(mshci_s3c_init);
+#endif
 module_exit(mshci_s3c_exit);
 
 MODULE_DESCRIPTION("Samsung MSHCI (HSMMC) glue");

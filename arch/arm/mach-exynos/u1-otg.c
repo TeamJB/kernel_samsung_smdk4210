@@ -84,6 +84,12 @@ static int c210_otg_host_phy_exit(int mode)
 }
 #endif
 
+static void c210_host_notify_cb(int mode)
+{
+	pr_info("otg host_notify : %d\n", mode);
+	host_state_notify(&host_notifier_pdata.ndev, mode);
+}
+
 static struct sec_otghost_data otghost_data = {
 	.clk_usage = 0,
 	.set_pwr_cb = usb_otg_accessory_power,
@@ -93,6 +99,7 @@ static struct sec_otghost_data otghost_data = {
 
 	.phy_init = c210_otg_host_phy_init,
 	.phy_exit = c210_otg_host_phy_exit,
+	.host_notify_cb = c210_host_notify_cb,
 };
 
 static struct resource s3c_usb_otghcd_resource[] = {

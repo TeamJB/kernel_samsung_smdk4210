@@ -23,9 +23,13 @@ enum cpufreq_level_index {
 };
 
 enum busfreq_level_request {
-	BUS_L0,		/* MEM 400MHz BUS 200MHz */
-	BUS_L1,		/* MEM 267MHz BUS 160MHz */
-	BUS_L2,		/* MEM 133MHz BUS 133MHz */
+	BUS_L0,		/* MEM 400MHz BUS 266MHz */
+	BUS_L1,		/* MEM 400MHz BUS 200MHz */
+	BUS_L2,		/* MEM 267MHz BUS 200MHz */
+	BUS_L3,		/* MEM 267MHz BUS 160MHz */
+	BUS_L4,		/* MEM 160MHz BUS 160MHz */
+	BUS_L5,		/* MEM 133MHz BUS 133MHz */
+	BUS_L6,		/* MEM 100MHz BUS 100MHz */
 	BUS_LEVEL_END,
 };
 
@@ -44,10 +48,27 @@ enum cpufreq_lock_ID {
 	DVFS_LOCK_ID_PEN,	/* E-PEN */
 	DVFS_LOCK_ID_G3D,	/* G3D */
 	DVFS_LOCK_ID_IR_LED,	/* IR_LED */
+	DVFS_LOCK_ID_LCD,	/* LCD */
+	DVFS_LOCK_ID_DRM,	/* DRM */
+	DVFS_LOCK_ID_ROTATION_BOOSTER,	/* ROTATION_BOOSTER */
+
+	/*
+	 * QoS Request on DMA Latency.
+	 *
+	 * dvfs_lock is a non standard implementation that can be
+	 * replaced with PM QoS framework.
+	 * However, in this implementation, in order to provide
+	 * a prototype and test of PM QoS on CPU (DMA Latency),
+	 * PM QoS uses dvfs_lock on CPU until we have a full
+	 * implementation in CPUFREQ framework of QoS.
+	 */
+	DVFS_LOCK_ID_QOS_DMA_LATENCY,
 	DVFS_LOCK_ID_END,
 };
 
 int exynos_cpufreq_get_level(unsigned int freq,
+			unsigned int *level);
+int exynos_find_cpufreq_level_by_volt(unsigned int arm_volt,
 			unsigned int *level);
 int exynos_cpufreq_lock(unsigned int nId,
 			enum cpufreq_level_index cpufreq_level);
@@ -61,7 +82,23 @@ int exynos_cpufreq_upper_limit(unsigned int nId,
 			enum cpufreq_level_index cpufreq_level);
 void exynos_cpufreq_upper_limit_free(unsigned int nId);
 
+/*
+ * This level fix API set highset priority level lock.
+ * Please use this carefully, with other lock API
+ */
+int exynos_cpufreq_level_fix(unsigned int freq);
+void exynos_cpufreq_level_unfix(void);
+int exynos_cpufreq_is_fixed(void);
+
 #define MAX_INDEX	10
+
+#ifdef CONFIG_SLP
+struct dvfs_qos_info {
+	unsigned int qos_value;
+	unsigned int min_freq;
+	enum cpufreq_level_index level;
+};
+#endif
 
 struct exynos_dvfs_info {
 	unsigned long	mpll_freq_khz;
@@ -75,6 +112,10 @@ struct exynos_dvfs_info {
 	struct cpufreq_frequency_table	*freq_table;
 	void (*set_freq)(unsigned int, unsigned int);
 	bool (*need_apll_change)(unsigned int, unsigned int);
+
+#ifdef CONFIG_SLP
+	struct dvfs_qos_info *cpu_dma_latency;
+#endif
 };
 
 extern struct exynos_dvfs_info *exynos_info;

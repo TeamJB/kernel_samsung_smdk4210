@@ -29,7 +29,7 @@ struct wm8994_ldo_pdata {
 #define WM8994_CONFIGURE_GPIO 0x10000
 
 #define WM8994_DRC_REGS 5
-#define WM8994_EQ_REGS  20
+#define WM8994_EQ_REGS  21
 #define WM8958_MBC_CUTOFF_REGS 20
 #define WM8958_MBC_COEFF_REGS  48
 #define WM8958_MBC_COMBINED_REGS 56
@@ -184,6 +184,9 @@ struct wm8994_pdata {
         /* WM8994 jack detect threashold levels, see datasheet for values */
         unsigned int jd_scthr:2;
         unsigned int jd_thr:2;
+
+	/* Configure WM1811 jack detection for use with external capacitor */
+	unsigned int jd_ext_cap:1;
 
 	/* WM8958 microphone bias configuration */
 	int micbias[2];

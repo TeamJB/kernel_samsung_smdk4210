@@ -203,9 +203,9 @@ void s3cfb_extdsp_late_resume(struct early_suspend *h)
 	struct s3cfb_extdsp_window *win;
 	struct s3cfb_extdsp_global *fbdev[2];
 	int j;
-
+/*
 	printk("s3cfb_extdsp_late_resume is called\n");
-
+*/
 	dev_dbg(info->dev, "wake up from suspend\n");
 
 	info->system_state = POWER_ON;
@@ -313,7 +313,11 @@ static void s3cfb_extdsp_unregister(void)
 	platform_driver_unregister(&s3cfb_extdsp_driver);
 }
 
+#if defined(CONFIG_FB_EXYNOS_FIMD_MC) || defined(CONFIG_FB_EXYNOS_FIMD_MC_WB)
+late_initcall(s3cfb_extdsp_register);
+#else
 module_init(s3cfb_extdsp_register);
+#endif
 module_exit(s3cfb_extdsp_unregister);
 
 MODULE_AUTHOR("Jingoo Han <jg1.han@samsung.com>");

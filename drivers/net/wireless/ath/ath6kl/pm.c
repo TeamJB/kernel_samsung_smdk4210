@@ -140,7 +140,7 @@ void ath6kl_config_suspend_wake_lock(struct ath6kl *ar, struct sk_buff *skb,
 {
 	struct ath6kl_vif *vif;
 #ifdef CONFIG_HAS_WAKELOCK
-	unsigned long wl_timeout = 5;
+	unsigned long wl_timeout = HZ;
 #endif
 	bool need_wake = false;
 
@@ -176,7 +176,21 @@ void ath6kl_config_suspend_wake_lock(struct ath6kl *ar, struct sk_buff *skb,
 #endif
 	}
 }
+#ifdef CONFIG_HAS_WAKELOCK
+void ath6kl_p2p_acquire_wakelock(struct ath6kl *ar, int wl_timeout)
+{
+	if (!wake_lock_active(&ar->p2p_wake_lock))
+		wake_lock_timeout(&ar->p2p_wake_lock, wl_timeout);
+	return;
+}
 
+void ath6kl_p2p_release_wakelock(struct ath6kl *ar)
+{
+	if (wake_lock_active(&ar->p2p_wake_lock))
+		wake_unlock(&ar->p2p_wake_lock);
+	return;
+}
+#endif
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static void ath6kl_early_suspend(struct early_suspend *handler)
 {
@@ -206,6 +220,9 @@ void ath6kl_setup_android_resource(struct ath6kl *ar)
 #endif
 #ifdef CONFIG_HAS_WAKELOCK
 	wake_lock_init(&ar->wake_lock, WAKE_LOCK_SUSPEND, "ath6kl_suspend_wl");
+	wake_lock_init(&ar->p2p_wake_lock,
+			WAKE_LOCK_SUSPEND,
+			"ath6kl_p2p_suspend_wl");
 #endif
 }
 
@@ -216,5 +233,6 @@ void ath6kl_cleanup_android_resource(struct ath6kl *ar)
 #endif
 #ifdef CONFIG_HAS_WAKELOCK
 	wake_lock_destroy(&ar->wake_lock);
+	wake_lock_destroy(&ar->p2p_wake_lock);
 #endif
 }

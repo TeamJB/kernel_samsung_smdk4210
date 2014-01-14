@@ -42,7 +42,10 @@
 #define PRESS_MSG_MASK			0x40
 #define RELEASE_MSG_MASK		0x20
 #define MOVE_MSG_MASK			0x10
+#define VECTOR_MSG_MASK			0x08
+#define AMP_MSG_MASK			0x04
 #define SUPPRESS_MSG_MASK		0x02
+#define UNGRIP_MSG_MASK			0x01
 
 /* Version */
 #define MXT540E_VER_10			0x10
@@ -738,7 +741,7 @@ static void resume_cal_err_func(struct mxt540e_data *data)
 
 #if 0
 #if defined(CONFIG_SHAPE_TOUCH)
-		if (sec_debug_level() != 0)
+		if (get_sec_debug_level() != 0)
 			printk(KERN_DEBUG
 				"[TSP] id[%d],x=%d,y=%d,z=%d,w=%d,com=%d\n", i,
 				data->fingers[i].x, data->fingers[i].y,
@@ -748,7 +751,7 @@ static void resume_cal_err_func(struct mxt540e_data *data)
 			printk(KERN_DEBUG "[TSP] id[%d] status:%d\n", i,
 				data->fingers[i].z);
 #else
-		if (sec_debug_level() != 0)
+		if (get_sec_debug_level() != 0)
 			printk(KERN_DEBUG "[TSP] id[%d],x=%d,y=%d,z=%d,w=%d\n",
 				i, data->fingers[i].x, data->fingers[i].y,
 				data->fingers[i].z, data->fingers[i].w);
@@ -1088,9 +1091,9 @@ static void report_input_data(struct mxt540e_data *data)
 					 data->fingers[i].x);
 			input_report_abs(data->input_dev, ABS_MT_POSITION_Y,
 					 data->fingers[i].y);
-			input_report_abs(data->input_dev, ABS_MT_TOUCH_MAJOR,
-					 data->fingers[i].z);
 			input_report_abs(data->input_dev, ABS_MT_PRESSURE,
+					 data->fingers[i].z);
+			input_report_abs(data->input_dev, ABS_MT_TOUCH_MAJOR,
 					 data->fingers[i].w);
 			input_report_abs(data->input_dev, ABS_MT_COMPONENT,
 					 data->fingers[i].component);
@@ -1102,32 +1105,16 @@ static void report_input_data(struct mxt540e_data *data)
 		if (data->fingers[i].state == MXT540E_STATE_PRESS
 			|| data->fingers[i].state == MXT540E_STATE_RELEASE) {
 #if 0
-#if defined(CONFIG_SHAPE_TOUCH)
-			if (sec_debug_level() != 0)
-				printk(KERN_DEBUG
-					"[TSP] id[%d],x=%d,y=%d,z=%d,w=%d,com=%d\n",
-					i, data->fingers[i].x,
-					data->fingers[i].y, data->fingers[i].z,
-					data->fingers[i].w,
-					data->fingers[i].component);
-			else
-				printk(KERN_DEBUG "[TSP] id[%d] status:%d\n", i,
-					data->fingers[i].z);
-#else
-			if (sec_debug_level() != 0)
-				printk(KERN_DEBUG
-					"[TSP] id[%d],x=%d,y=%d,z=%d,w=%d\n", i,
-					data->fingers[i].x, data->fingers[i].y,
-					data->fingers[i].z, data->fingers[i].w);
-			else
-				printk(KERN_DEBUG "[TSP] id[%d] status:%d\n", i,
-					data->fingers[i].z);
-#endif
+			printk(KERN_DEBUG
+				"[TSP] id[%d],x=%d,y=%d,z=%d,w=%d,com=%d\n", i,
+				data->fingers[i].x, data->fingers[i].y,
+				data->fingers[i].z, data->fingers[i].w,
+				data->fingers[i].component);
 #else
 			if (data->fingers[i].z == 0)
-				printk(KERN_DEBUG "[TSP] released\n");
+				printk(KERN_DEBUG "[TSP][%d] released\n", i);
 			else
-				printk(KERN_DEBUG "[TSP] pressed\n");
+				printk(KERN_DEBUG "[TSP][%d] pressed\n", i);
 #endif
 		}
 
@@ -1192,7 +1179,7 @@ static irqreturn_t mxt540e_irq_thread(int irq, void *ptr)
 	u8 object_type, instance;
 
 	if (data->cpu_freq_lock == -1)
-		exynos_cpufreq_get_level(800000, &data->cpu_freq_lock);
+		exynos_cpufreq_get_level(500000, &data->cpu_freq_lock);
 
 	do {
 		touch_message_flag = 0;
@@ -1271,7 +1258,8 @@ static irqreturn_t mxt540e_irq_thread(int irq, void *ptr)
 				data->finger_mask |= 1U << id;
 				data->fingers[id].state = MXT540E_STATE_RELEASE;
 			} else if ((msg[1] & DETECT_MSG_MASK) &&
-				(msg[1] & (PRESS_MSG_MASK | MOVE_MSG_MASK))) {
+				(msg[1] & (PRESS_MSG_MASK | MOVE_MSG_MASK
+					| VECTOR_MSG_MASK))) {
 				if (data->cpu_freq_lock != -1) {
 					if (touch_cpu_lock_status == 0) {
 						exynos_cpufreq_lock
@@ -2582,9 +2570,9 @@ static int __devinit mxt540e_probe(struct i2c_client *client,
 				pdata->max_x, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_POSITION_Y, pdata->min_y,
 				pdata->max_y, 0, 0);
-	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, pdata->min_z,
+	input_set_abs_params(input_dev, ABS_MT_PRESSURE, pdata->min_z,
 				pdata->max_z, 0, 0);
-	input_set_abs_params(input_dev, ABS_MT_PRESSURE, pdata->min_w,
+	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, pdata->min_w,
 				pdata->max_w, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_COMPONENT, 0, 255, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_SUMSIZE, 0, 16 * 26, 0, 0);

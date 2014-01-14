@@ -13,19 +13,26 @@
  * which has to be created by the fd = open(/dev/mobicore) command.
  *
  * <!-- Copyright Giesecke & Devrient GmbH 2009-2012 -->
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include "mcDrvModule.h"
 #include "mcDrvModuleLinuxApi.h"
+#include "mcDrvModuleAndroid.h"
 #include "mcDrvModuleFc.h"
 #include "public/mcKernelApi.h"
+#include "Mci/mcimcp.h"
 #include "buildTag.h"
 
 /** MobiCore interrupt context data */
 static struct mcDrvKModCtx	mcDrvKModCtx;
 
 /** MobiCore MCI information */
-static uint32_t              mciBase;
+static uint32_t             mciBase = 0;
+static mcpBuffer_ptr        mcpBuffer = NULL;
 /*
 #############################################################################
 ##
@@ -33,8 +40,7 @@ static uint32_t              mciBase;
 ##
 #############################################################################*/
 static int gotoCpu0(void);
-static int gotoAllCpu(void);
-
+static int gotoAllCpu(void) __attribute__ ((unused));
 
 /*----------------------------------------------------------------------------*/
 static void initAndAddToList(
@@ -102,11 +108,25 @@ static int isSecureMode(
     @return int TRUE or FALSE */
 static int isUserlandCallerPrivileged(
 	void
-)
-{
+) {
+	MCDRV_DBG_VERBOSE("enter %u\n", current_euid());
+	/* For some platforms we cannot run the Daemon as root - for Android
+	 * compliance tests it is not allowed, thus we assume the daemon is ran
+	 * as the system user.
+	 * In Android the system user for daemons has no particular capabilities
+	 * other than a fixed UID: AID_SYSTEM        1000
+	 * The actual number is guaranteed to be the same in all Android systems
+	 * so we will take it for granted: see android_filesystem_config.h in
+	 * the Android source tree for all UIDs and their meaning:
+	 * http://android-dls.com/wiki/index.php?title=Android_UIDs_and_GIDs
+	 */
+#ifdef MC_ANDROID_UID_CHECK
+	return (current_euid() == AID_SYSTEM);
+#else
 	/* capable should cover all possibilities, root or sudo, uid checking
 	 * was not very reliable */
 	return capable(CAP_SYS_ADMIN);
+#endif
 }
 
 
@@ -114,9 +134,7 @@ static int isUserlandCallerPrivileged(
 /*----------------------------------------------------------------------------*/
 static void unlockPagefromWsmL2Table(
 	struct page *pPage
-)
-{
-
+){
 	/* REV axh: check if we should do this. */
 	SetPageDirty(pPage);
 
@@ -165,7 +183,7 @@ static inline int lockUserPages(
 
 		/* lock user pages, must hold the mmap_sem to do this. */
 		down_read(&(pTask->mm->mmap_sem));
-		lockedPages = get_user_pages(
+		lockedPages = get_user_pages_nocma(
 				      pTask,
 				      pTask->mm,
 				      (unsigned long)virtStartPageAddr,
@@ -263,43 +281,43 @@ static void mcKernelModule_setupLog(
 	union fcGeneric fcLog;
 	int ret;
 
-       /* We need to go to CPU0 because we are going to do some SMC calls and
-        * they will otherwise fail because the Mobicore Monitor resides on
-        * CPU0(for Cortex A9 and lower) */
-       ret = gotoCpu0();
-       if (0 != ret) {
-               MCDRV_DBG("changing core failed!\n");
+	/* We need to go to CPU0 because we are going to do some SMC calls and
+	 * they will otherwise fail because the Mobicore Monitor resides on
+	 * CPU0(for Cortex A9 and lower) */
+	ret = gotoCpu0();
+	if (0 != ret) {
+		MCDRV_DBG("changing core failed!\n");
 		return;
 	}
 
-       mcLogPos = 0;
-       do {
-               if (!(logPage = (void *)get_zeroed_page(GFP_KERNEL))) {
-                       MCDRV_DBG_ERROR("Failed to get page for logger!");
-                       break;
-               }
-               physLogPage = virt_to_phys(logPage);
-               mcLogBuf = logPage;
+	mcLogPos = 0;
+	do {
+		if (!(logPage = (void *)get_zeroed_page(GFP_KERNEL))) {
+			MCDRV_DBG_ERROR("Failed to get page for logger!");
+			break;
+		}
+		physLogPage = virt_to_phys(logPage);
+		mcLogBuf = logPage;
 
-               memset(&fcLog, 0, sizeof(fcLog));
-               fcLog.asIn.cmd      = MC_FC_NWD_TRACE;
-               fcLog.asIn.param[0] = physLogPage;
-               fcLog.asIn.param[1] = PAGE_SIZE;
+		memset(&fcLog, 0, sizeof(fcLog));
+		fcLog.asIn.cmd      = MC_FC_NWD_TRACE;
+		fcLog.asIn.param[0] = physLogPage;
+		fcLog.asIn.param[1] = PAGE_SIZE;
 
-               MCDRV_DBG("fcLog virtPage=%p phyLogPage=%p ", logPage, (void*)physLogPage);
-               mcFastCall(&fcLog);
-               MCDRV_DBG("fcInfo out ret=0x%08x", fcLog.asOut.ret);
+		MCDRV_DBG("fcLog virtPage=%p phyLogPage=%p ", logPage, (void*)physLogPage);
+		mcFastCall(&fcLog);
+		MCDRV_DBG("fcInfo out ret=0x%08x", fcLog.asOut.ret);
 
-               if (fcLog.asOut.ret) {
-                       MCDRV_DBG_ERROR("Mobicore shared traces setup failed!");
-                       free_page((unsigned long)logPage);
-                       mcLogBuf = NULL;
-                       break;
-               }
-       } while(FALSE);
+		if (fcLog.asOut.ret) {
+			MCDRV_DBG_ERROR("Mobicore shared traces setup failed!");
+			free_page((unsigned long)logPage);
+			mcLogBuf = NULL;
+			break;
+		}
+	} while(FALSE);
 
-       /* Reset the mask of the current process to All cpus */
-       gotoAllCpu();
+	/* Reset the mask of the current process to All cpus */
+	gotoAllCpu();
 
 	MCDRV_DBG_VERBOSE("fcLog Logger version %u\n", mcLogBuf->version);
 }
@@ -468,7 +486,7 @@ static struct mcL2TablesDescr *allocateWsmL2TableContainer(
 			SetPageReserved(pPage);
 
 			/* allocate a descriptor */
-			pWsmL2TablesChunk = kmalloc(sizeof(*pWsmL2TablesChunk),
+			pWsmL2TablesChunk = kmalloc(sizeof(struct mcL2TablesChunk),
 						    GFP_KERNEL);
 			if (NULL == pWsmL2TablesChunk) {
 				kfree(pWsmL2Page);
@@ -508,7 +526,8 @@ static struct mcL2TablesDescr *allocateWsmL2TableContainer(
 	if (0 != ret) {
 		if (NULL != pWsmL2TableDescr) {
 			/* remove from list */
-			list_del(&(pWsmL2TablesChunk->list));
+			if (pWsmL2TablesChunk != NULL)
+				list_del(&(pWsmL2TablesChunk->list));
 			/* free memory */
 			kfree(pWsmL2TableDescr);
 			pWsmL2TableDescr = NULL;
@@ -1414,6 +1433,7 @@ int mobicore_free(
 	int			ret = 0;
 	struct mc_tuple		*pTuple;
 	unsigned int		i;
+	struct mm_struct	*mm = current->mm;
 
 	do {
 		/* search for the given address in the tuple list */
@@ -1426,6 +1446,12 @@ int mobicore_free(
 			MCDRV_DBG_ERROR("tuple not found\n");
 			ret = -EFAULT;
 			break;
+		}
+
+		if(do_munmap(mm, (long unsigned int)pTuple->virtUserAddr,
+				pTuple->reqSize) < 0) {
+			MCDRV_DBG_ERROR("Memory range can't be unmapped\n");
+			ret = -EINVAL;
 		}
 
 		MCDRV_DBG_VERBOSE("physAddr=0x%p, virtAddr=0x%p\n",
@@ -1601,6 +1627,10 @@ static int handleIoCtlYield(
 
 	MCDRV_ASSERT(NULL != pInstance);
 
+	/* Can't allow Yields while preparing to sleep */
+    if(mcpBuffer->mcFlags.sleepMode.SleepReq == MC_FLAG_REQ_TO_SLEEP)
+        return ret;
+
 	/* avoid putting debug output here, as we do this very often */
 	/* MCDRV_DBG("enter\n"); */
 
@@ -1645,8 +1675,12 @@ static int handleIoCtlNSIQ(
 
 	MCDRV_ASSERT(NULL != pInstance);
 
+	/* Can't allow Yields while preparing to sleep */
+    if(mcpBuffer->mcFlags.sleepMode.SleepReq == MC_FLAG_REQ_TO_SLEEP)
+        return ret;
+
 	/* avoid putting debug output here, as we do this very often */
-	/* MCDRV_DBG("enter\n"); */
+	 //MCDRV_DBG("enter\n");
 	/* only the MobiCore Daemon is allowed to call this function */
 	if (!isCallerMcDaemon(pInstance)) {
 		MCDRV_DBG_ERROR("caller not MobiCore Daemon\n");
@@ -1796,6 +1830,9 @@ static int handleIoCtlInit(
 		if (!mciBase) {
 			MCDRV_DBG_ERROR("No MCI set yet.\n");
 			return -EFAULT;
+		} else {
+			/* Save the information for later usage in the module */
+			mcpBuffer = (void*)mciBase + params.in.mcpOffset;
 		}
 		MCDRV_DBG("in cmd=0x%08x, base=0x%08x, "
 			  "nqInfo=0x%08x, mcpInfo=0x%08x\n",
@@ -1811,6 +1848,8 @@ static int handleIoCtlInit(
 			  fcInit.asOut.ret,
 			  fcInit.asOut.rfu[0],
 			  fcInit.asOut.rfu[1]);
+
+		MCDRV_DBG("MCP addr=%p IDLE=%d\n", mcpBuffer, mcpBuffer->mcFlags.schedule);
 
 		ret = convertFcRet(fcInit.asOut.ret);
 		if (0 != ret)
@@ -1943,142 +1982,6 @@ static int handleIoCtlGetVersion(
 }
 
 /*----------------------------------------------------------------------------*/
-/* TODO axh: remove this, it is just for testing things.
-static int handleTest(
-    struct mcInstance  *pInstance,
-    unsigned long   arg
-) {
-	int            ret = 0;
-	uint32_t       inParams[5];
-	uint32_t       outParams[5];
-	pid_t          testPidVnr;
-	struct task_struct *pTask;
-	struct pid     *pPidStruct;
-
-	MCDRV_ASSERT(NULL != pInstance);
-	MCDRV_DBG("enter\n");
-
-	do
-	{
-		// only the MobiCore Daemon is allowed to call this function
-		if (!isCallerMcDaemon(pInstance))
-		{
-			MCDRV_DBG_ERROR("caller not MobiCore Daemon\n");
-			ret = -EFAULT;
-			break;
-		}
-
-		ret = copy_from_user(
-			&inParams,
-			(void *)arg,
-			sizeof(inParams));
-		if (0 != ret)
-		{
-			MCDRV_DBG_ERROR("copy_from_user() failed\n");
-			break;
-		}
-
-		testPidVnr = (pid_t)(inParams[0]);
-		MCDRV_DBG("PID=%d\n",testPidVnrIn);
-
-		// find the task by it's PID. We use the virtual PID here, which
-		// is the one the calling tasks sees. We do not support
-		// different name spaces. For details about PIDs see
-		// http://lwn.net/Articles/259217
-		//
-		// Don't store the task, as this costs too much memory. Keep the
-		// PID struct instead. This appears to be preferred in from
-		// 2.6.31 on anyway, as find_task_by_vpid() is no longer
-		// exported.
-		//
-		// pTask = find_task_by_vpid(testPidVnr)
-		// if (NULL != pTask)
-		// {
-		//     MCDRV_DBG_ERROR("find_task_by_vpid\n");
-		//     ret = -EFAULT;
-		//     break;
-		// }
-
-		// Don't use find_vpid(), as this requires holding some locks.
-		// Better user find_get_pid(), which is take care of the locks
-		// internally.
-		pPidStruct = find_get_pid(testPidVnr);
-		if (NULL != pPidStruct)
-		{
-			MCDRV_DBG_ERROR("find_get_pid() failed\n");
-			ret = -EFAULT;
-			break;
-		}
-
-		// now we have a unique reference to another task. We must
-		// release this reference using put_pid() when we are done
-
-		do
-		{
-			pTask = pid_task(pPidStruct, PIDTYPE_PID);
-			if (NULL != pTask)
-			{
-				MCDRV_DBG_ERROR("pid_task() failed\n");
-				ret = -EFAULT;
-				break;
-			}
-
-			// now let's get access to the task's memory.
-			// see also
-			// http://linuxgazette.net/112/krishnakumar.html
-
-
-			pL2TableDescr = newWsmL2Table(
-					pInstance,
-					pTask,
-					(void *)(inParams[1]),
-					inParams[2]);
-
-			if (NULL == pL2TableDescr)
-			{
-				MCDRV_DBG_ERROR("newWsmL2Table() failed\n");
-				break;
-			}
-
-			// prepare response
-			outParams[0] = pL2TableDescr->handle;
-			outParams[1] = (uint32_t)getL2TablePhys(
-							pWsmL2TableDescr);
-
-			ret = copy_to_user(
-						(void *)arg,
-						&outParams,
-						sizeof(outParams));
-			if (0 != ret)
-			{
-				// free the table again, as app does not know
-				// about anything.
-				freeWsmL2Table(pL2TableDescr, FREE_FROM_NWD);
-
-				MCDRV_DBG_ERROR("copy_from_user() failed\n");
-				break;
-			}
-
-
-			// daemon has locked it.
-			pWsmL2TableDescr->flags |=
-					MC_WSM_L2_CONTAINER_WSM_LOCKED_BY_MC;
-
-		} while (FALSE);
-
-		// release PID struct reference
-		put_pid(pPidStruct);
-
-
-	}while (FALSE);
-
-	MCDRV_DBG("exit with %d/0x%08X\n", ret, ret);
-
-	return ret;
-}
-*/
-
-/*----------------------------------------------------------------------------*/
 /**
  * This function will be called from user space as ioctl(...).
  * @param pInode   pointer to inode
@@ -2098,8 +2001,6 @@ static long mcKernelModule_ioctl(
 	struct mcInstance	*pInstance = getInstance(pFile);
 
 	MCDRV_ASSERT(NULL != pInstance);
-	/* MCDRV_DBG("enter\n"); */
-	/* MCDRV_DBG("entering with cmd=0x%x, arg=0x%lx\n", cmd, arg); */
 
 	switch (cmd) {
 	/*--------------------------------------------------------------------*/
@@ -2187,14 +2088,6 @@ static long mcKernelModule_ioctl(
 					(struct mcIoCtlGetVersionParams *)arg);
 		break;
 
-	/*-----------------------------------------------------------
-	TODO axh: remove this, it is just for testing things.
-	case 0xFFFF0001:
-		ret = handleTest(
-			pInstance,
-			arg);
-		break;
-	*/
 	/*--------------------------------------------------------------------*/
 	default:
 		MCDRV_DBG_ERROR("unsupported cmd=%d\n", cmd);
@@ -2203,7 +2096,6 @@ static long mcKernelModule_ioctl(
 
 	} /* end switch(cmd) */
 
-	/* MCDRV_DBG("exit with %d/0x%08X\n", ret, ret); */
 #ifdef MC_MEM_TRACES
 	mobicore_read_log();
 #endif
@@ -2405,7 +2297,6 @@ int mobicore_allocate_wsm(
 		 *		Also, we never free a persistent Tci */
 		pTuple->physAddr       = physAddr;
 		pTuple->virtKernelAddr = kernelVirtAddr;
-		/* TODO: Is this OK? Probably so */
 		pTuple->virtUserAddr   = kernelVirtAddr;
 		pTuple->numPages       = (1U << order);
 		*pHandle = pTuple->handle;
@@ -2494,8 +2385,7 @@ static int mcKernelModule_mmap(
 				for (i = 0; i < MC_DRV_KMOD_TUPLE_NR; i++) {
 					pTuple = &(pInstance->tuple[i]);
 					if (0 == pTuple->handle) {
-						pTuple->handle =
-							getMcKModUniqueId();
+						pTuple->handle = getMcKModUniqueId();
 						break;
 					}
 				}
@@ -2540,8 +2430,8 @@ static int mcKernelModule_mmap(
 			}
 		}
 		/* Common code for all mmap calls:
-			* map page to user
-			* store data in page */
+		 * map page to user
+		 * store data in page */
 
 		MCDRV_DBG("allocated phys=0x%p - 0x%p, "
 			"size=%ld, kernelVirt=0x%p, handle=%d\n",
@@ -2585,6 +2475,7 @@ static int mcKernelModule_mmap(
 			pTuple->virtKernelAddr = kernelVirtAddr;
 			pTuple->virtUserAddr   = (void *)(pVmArea->vm_start);
 			pTuple->numPages       = (1U << order);
+			pTuple->reqSize        = requestedSize;
 		}
 
 		/* set response in allocated buffer */
@@ -2631,13 +2522,13 @@ static int gotoCpu0(
 		  "\tBinding this process to CPU #0.\n"
 		  "\tactive mask is %lx, setting it to mask=%lx\n",
 		  nr_cpu_ids,
-		  smp_processor_id(),
+		  raw_smp_processor_id(),
 		  cpu_active_mask->bits[0],
 		  mask.bits[0]);
 	ret = set_cpus_allowed_ptr(current, &mask);
 	if (0 != ret)
 		MCDRV_DBG_ERROR("set_cpus_allowed_ptr=%d.\n", ret);
-	MCDRV_DBG_VERBOSE("And now we are on CPU #%d\n", smp_processor_id());
+	MCDRV_DBG_VERBOSE("And now we are on CPU #%d\n", raw_smp_processor_id());
 
 	return ret;
 }
@@ -2660,13 +2551,13 @@ static int gotoAllCpu(
 		  "\tBinding this process to CPU #0.\n"
 		  "\tactive mask is %lx, setting it to mask=%lx\n",
 		  nr_cpu_ids,
-		  smp_processor_id(),
+		  raw_smp_processor_id(),
 		  cpu_active_mask->bits[0],
 		  mask.bits[0]);
 	ret = set_cpus_allowed_ptr(current, &mask);
 	if (0 != ret)
 		MCDRV_DBG_ERROR("set_cpus_allowed_ptr=%d.\n", ret);
-	MCDRV_DBG_VERBOSE("And now we are on CPU #%d\n", smp_processor_id());
+	MCDRV_DBG_VERBOSE("And now we are on CPU #%d\n", raw_smp_processor_id());
 
 	return ret;
 }
@@ -2945,6 +2836,76 @@ static struct miscdevice mcKernelModule_device = {
 	.fops	= &mcKernelModule_fileOperations,
 };
 
+#ifdef CONFIG_PM_RUNTIME
+
+static struct timer_list resume_timer;
+
+static void mobicore_resume_handler(unsigned long data)
+{
+	if(!mciBase || !mcpBuffer)
+		return;
+
+	mcpBuffer->mcFlags.sleepMode.SleepReq = MC_FLAG_NO_SLEEP_REQ;
+}
+
+static void mobicore_suspend_handler(struct work_struct *work)
+{
+	union fcGeneric fcSleep;
+#ifdef MC_MEM_TRACES
+    mobicore_read_log();
+#endif
+	memset(&fcSleep, 0, sizeof(fcSleep));
+	fcSleep.asIn.cmd = MC_SMC_N_SIQ;
+
+	mcpBuffer->mcFlags.sleepMode.SleepReq = MC_FLAG_REQ_TO_SLEEP;
+	mcFastCall(&(fcSleep));
+}
+
+DECLARE_WORK(mobicore_suspend_work, mobicore_suspend_handler);
+
+static int mobicore_suspend_notifier(struct notifier_block *nb,
+									 unsigned long event, void* dummy)
+{
+#ifdef MC_MEM_TRACES
+    mobicore_read_log();
+#endif
+	/* We have noting to say if MobiCore is not initialized*/
+	if(!mciBase || !mcpBuffer)
+		return 0;
+
+	switch (event)
+	{
+		case PM_SUSPEND_PREPARE:
+			/* We can't go to sleep if MobiCore is not IDLE or not Ready to sleep */
+			if (!(mcpBuffer->mcFlags.sleepMode.ReadyToSleep & MC_STATE_READY_TO_SLEEP))
+			{
+				MCDRV_DBG("Suspend IDLE=%d!\n", mcpBuffer->mcFlags.schedule);
+				MCDRV_DBG("Suspend REQ=%d!\n", mcpBuffer->mcFlags.sleepMode.SleepReq);
+				MCDRV_DBG("Suspend Ready=%d!\n", mcpBuffer->mcFlags.sleepMode.ReadyToSleep);
+				schedule_work_on(0, &mobicore_suspend_work);
+				MCDRV_DBG("Don't allow SLEEP!");
+				return NOTIFY_BAD;
+			}
+			MCDRV_DBG("Suspend IDLE=%d!\n", mcpBuffer->mcFlags.schedule);
+            MCDRV_DBG("Suspend REQ=%d!\n", mcpBuffer->mcFlags.sleepMode.SleepReq);
+            MCDRV_DBG("Suspend Ready=%d!\n", mcpBuffer->mcFlags.sleepMode.ReadyToSleep);
+			cancel_work_sync(&mobicore_suspend_work);
+			mod_timer(&resume_timer, 0);
+			break;
+        case PM_POST_SUSPEND :
+			MCDRV_DBG("POST-Sleep request %d in!\n", mcpBuffer->mcFlags.sleepMode.SleepReq);
+			mod_timer(&resume_timer, jiffies + msecs_to_jiffies(1000) );
+            break;
+		default:
+			break;
+	}
+	return 0;
+}
+
+static struct notifier_block mobicore_notif_block = {
+    .notifier_call = mobicore_suspend_notifier,
+};
+#endif /* CONFIG_PM_RUNTIME */
 
 /*----------------------------------------------------------------------------*/
 /**
@@ -2985,7 +2946,7 @@ static int __init mcKernelModule_init(
 		/* setupLog won't fail, it eats up any errors */
 		mcKernelModule_setupLog();
 #endif
-
+		mcDrvKModCtx.daemonInst = NULL;
 		sema_init(&mcDrvKModCtx.daemonCtx.sem, 0);
 		/* set up S-SIQ interrupt handler */
 		ret = request_irq(
@@ -3004,7 +2965,13 @@ static int __init mcKernelModule_init(
 			MCDRV_DBG_ERROR("device register failed\n");
 			break;
 		}
-
+#ifdef CONFIG_PM_RUNTIME
+		setup_timer( &resume_timer, mobicore_resume_handler, 0 );
+		if ((ret = register_pm_notifier(&mobicore_notif_block))) {
+			MCDRV_DBG_ERROR("device pm register failed\n");
+			break;
+		}
+#endif //CONFIG_PM_RUNTIME
 		/* initialize event counter for signaling of an IRQ to zero */
 		atomic_set(&(mcDrvKModCtx.ssiqCtx.counter), 0);
 
@@ -3022,7 +2989,6 @@ static int __init mcKernelModule_init(
 			instead of 0. */
 		atomic_set(&(mcDrvKModCtx.uniqueCounter), 1);
 
-		mciBase = 0;
 		MCDRV_DBG("initialized\n");
 
 		ret = 0;
@@ -3060,6 +3026,13 @@ static void __exit mcKernelModule_exit(
 			pWsmL2Descr->nrOfPages);
 	} /* end while */
 
+#ifdef CONFIG_PM_RUNTIME
+	if (unregister_pm_notifier(&mobicore_notif_block)) {
+		MCDRV_DBG_ERROR("device pm unregister failed\n");
+	}
+	del_timer(&resume_timer);
+#endif
+
 	free_irq(MC_INTR_SSIQ, &mcDrvKModCtx);
 
 	misc_deregister(&mcKernelModule_device);
@@ -3077,8 +3050,7 @@ static void __exit mcKernelModule_exit(
 module_init(mcKernelModule_init);
 module_exit(mcKernelModule_exit);
 MODULE_AUTHOR("Giesecke & Devrient GmbH");
-MODULE_LICENSE("Dual BSD/GPL");
+MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MobiCore driver");
-/*MODULE_VERSION(VERSION); */
 
 /** @} */

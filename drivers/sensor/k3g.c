@@ -259,8 +259,14 @@ static int k3g_report_gyro_values(struct k3g_data *k3g_data)
 		return k3g_restart_fifo(k3g_data);
 	}
 
+	#if defined(CONFIG_MACH_U1_NA_SPR) \
+	|| defined(CONFIG_MACH_U1_NA_USCC)
+	input_report_rel(k3g_data->input_dev, REL_RX, -data.x);
+	input_report_rel(k3g_data->input_dev, REL_RY, -data.y);
+	#else
 	input_report_rel(k3g_data->input_dev, REL_RX, data.x);
 	input_report_rel(k3g_data->input_dev, REL_RY, data.y);
+	#endif
 	input_report_rel(k3g_data->input_dev, REL_RZ, data.z);
 	input_sync(k3g_data->input_dev);
 
@@ -665,16 +671,16 @@ static int k3g_fifo_self_test(struct k3g_data *k3g_data)
 	if (!k3g_data->enable && k3g_data->interruptible) {
 		enable_irq(k3g_data->client->irq);
 		err = wait_for_completion_timeout(&k3g_data->data_ready, 5*HZ);
-		msleep(200);
 		if (err <= 0) {
 			disable_irq(k3g_data->client->irq);
 			if (!err)
 				pr_err("%s: wait timed out\n", __func__);
 			goto exit;
 		}
-	/* if polling mode */
-	} else
-		msleep(200);
+	}
+
+	/* wait for 32 fifo entries */
+	msleep(200);
 
 	/* check out watermark status */
 	status_reg = i2c_smbus_read_byte_data(k3g_data->client, FIFO_SRC_REG);
@@ -718,6 +724,10 @@ static int k3g_fifo_self_test(struct k3g_data *k3g_data)
 
 exit:
 	k3g_data->fifo_test = false;
+
+	/* make sure clearing interrupt */
+	enable_irq(k3g_data->client->irq);
+	disable_irq(k3g_data->client->irq);
 
 	/* 1: success, 0: fail, 2: retry */
 	return fifo_pass;

@@ -21,7 +21,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
 #ifdef CONFIG_VIDEO_SAMSUNG_V4L2
-#include <linux/videodev2_samsung.h>
+#include <linux/videodev2_exynos_camera.h>
 #endif
 #include <media/sr200pc20m_platform.h>
 #include "sr200pc20m.h"

@@ -38,6 +38,7 @@ static enum power_supply_property sec_battery_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_AVG,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_CURRENT_AVG,
+	POWER_SUPPLY_PROP_CHARGE_NOW,
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_TEMP,
 	POWER_SUPPLY_PROP_TEMP_AMBIENT,
@@ -73,7 +74,7 @@ struct sec_battery_info {
 
 	int voltage_now;		/* cell voltage (mV) */
 	int voltage_avg;		/* average voltage (mV) */
-	int voltage_vfocv;		/* voltage by fuelgauge (mV) */
+	int voltage_ocv;		/* open circuit voltage (mV) */
 	int current_now;		/* current (mA) */
 	int current_avg;		/* average current (mA) */
 	int current_adc;
@@ -83,13 +84,14 @@ struct sec_battery_info {
 	struct mutex adclock;
 	struct adc_sample_info	adc_sample[ADC_CH_COUNT];
 
-	bool long_polling_activated;
 	/* keep awake until monitor is done */
 	struct wake_lock monitor_wake_lock;
 	struct workqueue_struct *monitor_wqueue;
 	struct work_struct monitor_work;
 	unsigned int polling_count;
 	unsigned int polling_time;
+	bool polling_in_sleep;
+	bool polling_short;
 
 	struct delayed_work polling_work;
 	struct alarm polling_alarm;
@@ -98,7 +100,8 @@ struct sec_battery_info {
 	/* event set */
 	unsigned int event;
 	unsigned int event_wait;
-	struct timer_list event_expired_timer;
+	struct alarm event_termination_alarm;
+	ktime_t	last_event_time;
 
 	/* battery check */
 	unsigned int check_count;
@@ -110,12 +113,14 @@ struct sec_battery_info {
 	unsigned long charging_start_time;
 	unsigned long charging_passed_time;
 	unsigned long charging_next_time;
+	unsigned long charging_fullcharged_time;
 
 	/* temperature check */
 	int temperature;	/* battery temperature */
 	int temper_amb;		/* target temperature */
 
 	int temp_adc;
+	int temp_ambient_adc;
 
 	int temp_high_threshold;
 	int temp_high_recovery;
@@ -128,26 +133,30 @@ struct sec_battery_info {
 
 	/* charging */
 	unsigned int charging_mode;
+	bool is_recharging;
 	int cable_type;
+	int extended_cable_type;
 	struct wake_lock cable_wake_lock;
 	struct work_struct cable_work;
 	struct wake_lock vbus_wake_lock;
 	unsigned int full_check_cnt;
+	unsigned int recharge_check_cnt;
 
 	/* test mode */
 	bool test_activated;
+	bool factory_mode;
 };
 
 static char *supply_list[] = {
 	"battery",
 };
 
-static ssize_t sec_bat_show_attrs(struct device *dev,
-					struct device_attribute *attr, char *buf);
+ssize_t sec_bat_show_attrs(struct device *dev,
+				struct device_attribute *attr, char *buf);
 
-static ssize_t sec_bat_store_attrs(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count);
+ssize_t sec_bat_store_attrs(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count);
 
 #define SEC_BATTERY_ATTR(_name)						\
 {									\
@@ -191,10 +200,14 @@ static struct device_attribute sec_battery_attrs[] = {
 	SEC_BATTERY_ATTR(batt_charging_source),
 	SEC_BATTERY_ATTR(fg_reg_dump),
 	SEC_BATTERY_ATTR(fg_reset_cap),
+	SEC_BATTERY_ATTR(fg_capacity),
 	SEC_BATTERY_ATTR(auth),
 	SEC_BATTERY_ATTR(chg_current_adc),
 	SEC_BATTERY_ATTR(wc_adc),
 	SEC_BATTERY_ATTR(wc_status),
+	SEC_BATTERY_ATTR(factory_mode),
+	SEC_BATTERY_ATTR(update),
+	SEC_BATTERY_ATTR(test_mode),
 
 	SEC_BATTERY_ATTR(2g_call),
 	SEC_BATTERY_ATTR(3g_call),
@@ -212,29 +225,33 @@ static struct device_attribute sec_battery_attrs[] = {
 };
 
 enum {
-	BATT_EVENT_BATT_RESET_SOC = 0,
-	BATT_EVENT_BATT_READ_RAW_SOC,
-	BATT_EVENT_BATT_READ_ADJ_SOC,
-	BATT_EVENT_BATT_TYPE,
-	BATT_EVENT_BATT_VFOCV,
-	BATT_EVENT_BATT_VOL_ADC,
-	BATT_EVENT_BATT_VOL_ADC_CAL,
-	BATT_EVENT_BATT_VOL_AVER,
-	BATT_EVENT_BATT_VOL_ADC_AVER,
-	BATT_EVENT_BATT_TEMP_ADC,
-	BATT_EVENT_BATT_TEMP_AVER,
-	BATT_EVENT_BATT_TEMP_ADC_AVER,
-	BATT_EVENT_BATT_VF_ADC,
+	BATT_RESET_SOC = 0,
+	BATT_READ_RAW_SOC,
+	BATT_READ_ADJ_SOC,
+	BATT_TYPE,
+	BATT_VFOCV,
+	BATT_VOL_ADC,
+	BATT_VOL_ADC_CAL,
+	BATT_VOL_AVER,
+	BATT_VOL_ADC_AVER,
+	BATT_TEMP_ADC,
+	BATT_TEMP_AVER,
+	BATT_TEMP_ADC_AVER,
+	BATT_VF_ADC,
 
-	BATT_EVENT_BATT_LP_CHARGING,
-	BATT_EVENT_SIOP_ACTIVATED,
-	BATT_EVENT_BATT_CHARGING_SOURCE,
-	BATT_EVENT_FG_REG_DUMP,
-	BATT_EVENT_FG_RESET_CAP,
-	BATT_EVENT_AUTH,
-	BATT_EVENT_CHG_CURRENT_ADC,
-	BATT_EVENT_WC_ADC,
-	BATT_EVENT_WC_STATUS,
+	BATT_LP_CHARGING,
+	SIOP_ACTIVATED,
+	BATT_CHARGING_SOURCE,
+	FG_REG_DUMP,
+	FG_RESET_CAP,
+	FG_CAPACITY,
+	AUTH,
+	CHG_CURRENT_ADC,
+	WC_ADC,
+	WC_STATUS,
+	FACTORY_MODE,
+	UPDATE,
+	TEST_MODE,
 
 	BATT_EVENT_2G_CALL,
 	BATT_EVENT_3G_CALL,

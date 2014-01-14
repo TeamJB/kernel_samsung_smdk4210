@@ -48,17 +48,13 @@ int g2d_clk_disable(struct g2d_global *g2d_dev)
 
 void g2d_sysmmu_on(struct g2d_global *g2d_dev)
 {
-	g2d_clk_enable(g2d_dev);
-	s5p_sysmmu_enable(g2d_dev->dev,
+	exynos_sysmmu_enable(g2d_dev->dev,
 			(unsigned long)virt_to_phys((void *)init_mm.pgd));
-	g2d_clk_disable(g2d_dev);
 }
 
 void g2d_sysmmu_off(struct g2d_global *g2d_dev)
 {
-	g2d_clk_enable(g2d_dev);
-	s5p_sysmmu_disable(g2d_dev->dev);
-	g2d_clk_disable(g2d_dev);
+	exynos_sysmmu_disable(g2d_dev->dev);
 }
 
 void g2d_fail_debug(g2d_params *params)
@@ -178,18 +174,6 @@ int g2d_do_blit(struct g2d_global *g2d_dev, g2d_params *params)
 	}		
 
 	if (params->flag.memory_type == G2D_MEMORY_KERNEL) {
-#if defined(CONFIG_S5P_MEM_CMA)
-		if (!cma_is_registered_region((unsigned int)params->src_rect.addr,
-				GET_RECT_SIZE(params->src_rect))) {
-			printk(KERN_ERR "[%s] SRC Surface is not included in CMA region\n", __func__);
-			return -1;
-		}
-		if (!cma_is_registered_region((unsigned int)params->dst_rect.addr,
-				GET_RECT_SIZE(params->dst_rect))) {
-			printk(KERN_ERR "[%s] DST Surface is not included in CMA region\n", __func__);
-			return -1;
-		}
-#endif
 		params->src_rect.addr = (unsigned char *)phys_to_virt((unsigned long)params->src_rect.addr);
 		params->dst_rect.addr = (unsigned char *)phys_to_virt((unsigned long)params->dst_rect.addr);
 		pgd = (unsigned long)init_mm.pgd;
@@ -241,8 +225,8 @@ int g2d_do_blit(struct g2d_global *g2d_dev, g2d_params *params)
 		}
 	}
 
-	s5p_sysmmu_set_tablebase_pgd(g2d_dev->dev,
-					(u32)virt_to_phys((void *)pgd));
+	exynos_sysmmu_disable(g2d_dev->dev);
+	exynos_sysmmu_enable(g2d_dev->dev, (u32)virt_to_phys((void *)pgd));
 
 	if(g2d_init_regs(g2d_dev, params) < 0) {
 		return false;

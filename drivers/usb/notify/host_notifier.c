@@ -18,16 +18,25 @@
 #include <linux/wakelock.h>
 #include <linux/host_notify.h>
 
+#if defined(CONFIG_HAS_EARLYSUSPEND) && defined(CONFIG_FAST_BOOT)
+#include <linux/earlysuspend.h>
+#endif
+
 struct  host_notifier_info {
 	struct host_notifier_platform_data *pdata;
 	struct task_struct *th;
+	struct wake_lock	wlock;
+	struct delayed_work current_dwork;
 	wait_queue_head_t	delay_wait;
 	int	thread_remove;
-
-	struct wake_lock	wlock;
+	int currentlimit_irq;
 };
 
 static struct host_notifier_info ninfo;
+
+#if defined(CONFIG_HAS_EARLYSUSPEND) && defined(CONFIG_FAST_BOOT)
+static struct early_suspend early_suspend;
+#endif
 
 static int currentlimit_thread(void *data)
 {
@@ -107,10 +116,43 @@ static int stop_usbhostd_thread(void)
 
 	return 0;
 }
+#if defined(CONFIG_HAS_EARLYSUSPEND) && defined(CONFIG_FAST_BOOT)
+static int start_usbhostd_wakelock(void)
+{
+	pr_info("host_notifier: start usbhostd wakelock\n");
+	wake_lock(&ninfo.wlock);
 
+	return 0;
+}
+
+static int stop_usbhostd_wakelock(void)
+{
+	pr_info("host_notifier: stop usbhostd wakelock\n");
+	wake_unlock(&ninfo.wlock);
+
+	return 0;
+}
+#endif
+
+#ifdef CONFIG_MACH_P4NOTE
+void host_notifier_enable_irq(void)
+{
+	pr_info("host_notifier: %s\n", __func__);
+	enable_irq(ninfo.currentlimit_irq);
+}
+
+void host_notifier_disable_irq(void)
+{
+	pr_info("host_notifier: %s\n", __func__);
+	disable_irq(ninfo.currentlimit_irq);
+}
+#endif
 static int start_usbhostd_notify(void)
 {
 	pr_info("host_notifier: start usbhostd notify\n");
+#ifdef CONFIG_MACH_P4NOTE
+	host_notifier_enable_irq();
+#endif
 
 	host_state_notify(&ninfo.pdata->ndev, NOTIFY_HOST_ADD);
 	wake_lock(&ninfo.wlock);
@@ -121,6 +163,9 @@ static int start_usbhostd_notify(void)
 static int stop_usbhostd_notify(void)
 {
 	pr_info("host_notifier: stop usbhostd notify\n");
+#ifdef CONFIG_MACH_P4NOTE
+	host_notifier_disable_irq();
+#endif
 
 	host_state_notify(&ninfo.pdata->ndev, NOTIFY_HOST_REMOVE);
 	wake_unlock(&ninfo.wlock);
@@ -131,7 +176,12 @@ static int stop_usbhostd_notify(void)
 static void host_notifier_booster(int enable)
 {
 	pr_info("host_notifier: booster %s\n", enable ? "ON" : "OFF");
-
+#ifdef CONFIG_MACH_P4NOTE
+	if (enable)
+		host_notifier_enable_irq();
+	else
+		host_notifier_disable_irq();
+#endif
 	ninfo.pdata->booster(enable);
 
 	if (ninfo.pdata->thread_enable) {
@@ -141,6 +191,90 @@ static void host_notifier_booster(int enable)
 			stop_usbhostd_thread();
 	}
 }
+
+static irqreturn_t currentlimit_irq_thread(int irq, void *data)
+{
+	struct host_notifier_info *hostinfo = data;
+	struct host_notify_dev *ndev = &hostinfo->pdata->ndev;
+	int gpio = hostinfo->pdata->gpio;
+	int prev = ndev->booster;
+	int ret = 0;
+
+	ret = gpio_get_value(gpio);
+	pr_info("currentlimit_irq_thread gpio : %d, value : %d\n", gpio, ret);
+
+	if (prev != ret) {
+		pr_info("host_notifier currentlimit_irq_thread: gpio %d = %s\n",
+				gpio, ret ? "HIGH" : "LOW");
+		ndev->booster = ret ?
+			NOTIFY_POWER_ON : NOTIFY_POWER_OFF;
+		prev = ret;
+
+		if (!ret && ndev->mode == NOTIFY_HOST_MODE) {
+			host_state_notify(ndev,
+					NOTIFY_HOST_OVERCURRENT);
+			pr_err("host_notifier currentlimit_irq_thread: overcurrent\n");
+		}
+	}
+	return IRQ_HANDLED;
+}
+
+static int currentlimit_irq_init(struct host_notifier_info *hostinfo)
+{
+	int ret = 0;
+
+	hostinfo->currentlimit_irq = gpio_to_irq(hostinfo->pdata->gpio);
+
+	ret = request_threaded_irq(hostinfo->currentlimit_irq, NULL,
+			currentlimit_irq_thread,
+			IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
+			"overcurrent_detect", hostinfo);
+	if (ret)
+		pr_info("host_notifier: %s return : %d\n", __func__, ret);
+#ifdef CONFIG_MACH_P4NOTE
+	host_notifier_disable_irq();
+#endif
+
+	return ret;
+}
+
+static void currentlimit_irq_work(struct work_struct *work)
+{
+	int retval;
+	struct host_notifier_info *hostinfo = container_of(work,
+			struct host_notifier_info, current_dwork.work);
+
+	retval = currentlimit_irq_init(hostinfo);
+
+	if (retval)
+		pr_err("host_notifier: %s retval : %d\n", __func__, retval);
+	return;
+}
+
+#if defined(CONFIG_HAS_EARLYSUSPEND) && defined(CONFIG_FAST_BOOT)
+static bool restart_hostd;
+static void host_notifier_early_suspend(struct early_suspend *h)
+{
+	if (fake_shut_down) {
+		pr_info("%s: fake shut down ", __func__);
+		host_notifier_booster(0);
+		stop_usbhostd_wakelock();
+		restart_hostd = true;
+	}
+}
+
+static void host_notifier_late_resume(struct early_suspend *h)
+{
+	if (restart_hostd) {
+		pr_info("%s: fake shut down ", __func__);
+		restart_hostd = false;
+		if (ninfo.pdata->is_host_working) {
+			host_notifier_booster(1);
+			start_usbhostd_wakelock();
+		}
+	}
+}
+#endif
 
 static int host_notifier_probe(struct platform_device *pdev)
 {
@@ -168,6 +302,13 @@ static int host_notifier_probe(struct platform_device *pdev)
 		ninfo.pdata->ndev.set_booster = host_notifier_booster;
 		ninfo.pdata->usbhostd_start = start_usbhostd_thread;
 		ninfo.pdata->usbhostd_stop = stop_usbhostd_thread;
+	} else if (ninfo.pdata->irq_enable) {
+		INIT_DELAYED_WORK(&ninfo.current_dwork, currentlimit_irq_work);
+		schedule_delayed_work(&ninfo.current_dwork,
+				msecs_to_jiffies(10000));
+		ninfo.pdata->ndev.set_booster = host_notifier_booster;
+		ninfo.pdata->usbhostd_start = start_usbhostd_notify;
+		ninfo.pdata->usbhostd_stop = stop_usbhostd_notify;
 	} else {
 		ninfo.pdata->ndev.set_booster = host_notifier_booster;
 		ninfo.pdata->usbhostd_start = start_usbhostd_notify;
@@ -179,6 +320,13 @@ static int host_notifier_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Failed to host_notify_dev_register\n");
 		return ret;
 	}
+
+#if defined(CONFIG_HAS_EARLYSUSPEND) && defined(CONFIG_FAST_BOOT)
+	early_suspend.level = EARLY_SUSPEND_LEVEL_DISABLE_FB - 1;
+	early_suspend.suspend = host_notifier_early_suspend;
+	early_suspend.resume = host_notifier_late_resume;
+	register_early_suspend(&early_suspend);
+#endif
 	wake_lock_init(&ninfo.wlock, WAKE_LOCK_SUSPEND, "hostd");
 
 	return 0;
@@ -186,6 +334,9 @@ static int host_notifier_probe(struct platform_device *pdev)
 
 static int host_notifier_remove(struct platform_device *pdev)
 {
+#if defined(CONFIG_HAS_EARLYSUSPEND) && defined(CONFIG_FAST_BOOT)
+	unregister_early_suspend(&early_suspend);
+#endif
 	/* gpio_free(ninfo.pdata->gpio); */
 	host_notify_dev_unregister(&ninfo.pdata->ndev);
 	wake_lock_destroy(&ninfo.wlock);

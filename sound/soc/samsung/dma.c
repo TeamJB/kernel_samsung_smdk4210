@@ -41,10 +41,10 @@ static const struct snd_pcm_hardware dma_hardware = {
 				    SNDRV_PCM_FMTBIT_U8 |
 				    SNDRV_PCM_FMTBIT_S8,
 	.channels_min		= 1,
-	.channels_max		= 2,
+	.channels_max		= 6,
 	.buffer_bytes_max	= 128*1024,
 	.period_bytes_min	= PAGE_SIZE,
-	.period_bytes_max	= PAGE_SIZE*2,
+	.period_bytes_max	= PAGE_SIZE*8,
 	.periods_min		= 2,
 	.periods_max		= 128,
 	.fifo_size		= 32,
@@ -201,13 +201,12 @@ static int dma_hw_params(struct snd_pcm_substream *substream,
 	prtd->dma_start = runtime->dma_addr;
 	prtd->dma_pos = prtd->dma_start;
 	prtd->dma_end = prtd->dma_start + totbytes;
-#ifndef PRODUCT_SHIP
+
 	pr_info("G:%s:DmaAddr=@%x Total=%d PrdSz=%d #Prds=%d dma_area=0x%x\n",
 		(substream->stream == SNDRV_PCM_STREAM_PLAYBACK) ? "P" : "C",
 		prtd->dma_start, runtime->dma_bytes,
 		params_period_bytes(params), params_periods(params),
 		(unsigned int)runtime->dma_area);
-#endif
 
 	spin_unlock_irq(&prtd->lock);
 
@@ -223,10 +222,18 @@ static int dma_hw_free(struct snd_pcm_substream *substream)
 	/* TODO - do we need to ensure DMA flushed */
 	snd_pcm_set_runtime_buffer(substream, NULL);
 
+#ifdef CONFIG_SLP_WIP
+	spin_lock(&prtd->lock);
+#endif
+
 	if (prtd->params) {
 		s3c2410_dma_free(prtd->params->channel, prtd->params->client);
 		prtd->params = NULL;
 	}
+
+#ifdef CONFIG_SLP_WIP
+	spin_unlock(&prtd->lock);
+#endif
 
 	return 0;
 }

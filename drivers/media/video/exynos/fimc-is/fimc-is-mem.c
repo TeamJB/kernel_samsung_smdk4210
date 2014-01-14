@@ -99,6 +99,7 @@ int fimc_is_init_mem_mgr(struct fimc_is_dev *dev)
 {
 	struct cma_info mem_info;
 	int err;
+	unsigned char *membase;
 
 	/* Alloc FW memory */
 	err = cma_info(&mem_info, &dev->pdev->dev, FIMC_IS_MEM_FW);
@@ -119,13 +120,30 @@ int fimc_is_init_mem_mgr(struct fimc_is_dev *dev)
 	dev->is_shared_region =
 		(struct is_share_region *)(phys_to_virt(dev->mem.base +
 				FIMC_IS_SHARED_REGION_ADDR));
+
+	membase = (unsigned char *)(phys_to_virt(dev->mem.base));
+	memset(membase, 0x0, FIMC_IS_A5_MEM_SIZE);
+
 	memset((void *)dev->is_p_region, 0,
 		(unsigned long)sizeof(struct is_region));
 	fimc_is_mem_cache_clean((void *)dev->is_p_region, IS_PARAM_SIZE);
-
 	printk(KERN_INFO "ctrl->mem.base = 0x%x\n", dev->mem.base);
 	printk(KERN_INFO "ctrl->mem.size = 0x%x\n", dev->mem.size);
 
+	if (dev->mem.size >= (FIMC_IS_A5_MEM_SIZE + FIMC_IS_EXTRA_MEM_SIZE)) {
+		dev->mem.fw_ref_base =
+				dev->mem.base + FIMC_IS_A5_MEM_SIZE + 0x1000;
+		dev->mem.setfile_ref_base =
+				dev->mem.base + FIMC_IS_A5_MEM_SIZE + 0x1000
+						+ FIMC_IS_EXTRA_FW_SIZE;
+		printk(KERN_INFO "ctrl->mem.fw_ref_base = 0x%x\n",
+							dev->mem.fw_ref_base);
+		printk(KERN_INFO "ctrl->mem.setfile_ref_base = 0x%x\n",
+						dev->mem.setfile_ref_base);
+	} else {
+		dev->mem.fw_ref_base = 0;
+		dev->mem.setfile_ref_base = 0;
+	}
 #ifdef CONFIG_VIDEO_EXYNOS_FIMC_IS_BAYER
 	err = cma_info(&mem_info, &dev->pdev->dev, FIMC_IS_MEM_ISP_BUF);
 	printk(KERN_INFO "%s : [cma_info] start_addr : 0x%x, end_addr : 0x%x, "

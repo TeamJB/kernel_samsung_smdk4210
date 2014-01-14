@@ -2,7 +2,7 @@
  * @file
  * Driver ID definition.
  *
- * <!-- Copyright Giesecke & Devrient GmbH 2011 -->
+ * <!-- Copyright Giesecke & Devrient GmbH 2011-2012 -->
  */
 
 #ifndef RTMDRVID_H_

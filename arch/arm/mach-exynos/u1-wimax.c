@@ -9,12 +9,9 @@
 #include <mach/regs-gpio.h>
 #include <mach/gpio.h>
 #include <mach/gpio-u1.h>
+#include <linux/wimax/samsung/max8893.h>
 
 #if defined(CONFIG_WIMAX_CMC) /* && defined(CONFIG_TARGET_LOCALE_NA)*/
-
-extern int wimax_pmic_set_voltage(void);
-
-extern int s3c_bat_use_wimax(int onoff);
 
 void wimax_on_pin_conf(int onoff)
 {
@@ -69,7 +66,7 @@ static void signal_ap_active(int enable)
 static void switch_eeprom_wimax(void)
 {
 	gpio_set_value(GPIO_WIMAX_I2C_CON, GPIO_LEVEL_LOW);
-	msleep(10);
+	usleep_range(10000, 10000);
 }
 
 static void switch_usb_ap(void)
@@ -78,7 +75,7 @@ static void switch_usb_ap(void)
 #if defined(CONFIG_MACH_C1_REV02)
 	gpio_set_value(USB_SEL, GPIO_LEVEL_LOW);
 #endif				/* CONFIG_MACH_C1_REV02 */
-	msleep(10);
+	usleep_range(10000, 10000);
 }
 
 static void switch_usb_wimax(void)
@@ -87,10 +84,10 @@ static void switch_usb_wimax(void)
 #if defined(CONFIG_MACH_C1_REV02)
 	gpio_set_value(USB_SEL, GPIO_LEVEL_HIGH);
 #endif				/* CONFIG_MACH_C1_REV02 */
-	msleep(10);
+	usleep_range(10000, 10000);
 }
 
-#if 0
+#if defined(CONFIG_UART_SWITCH_AND_GPIO_DUMP_FOR_WIMAX)
 static void switch_uart_ap(void)
 {
 	gpio_set_value(GPIO_UART_SEL, GPIO_LEVEL_HIGH);
@@ -111,17 +108,19 @@ static void wimax_init_gpios(void)
 	s3c_gpio_setpull(GPIO_WIMAX_INT, S3C_GPIO_PULL_UP);
 	s3c_gpio_cfgpin(GPIO_WIMAX_CON0, S3C_GPIO_INPUT);
 	s3c_gpio_setpull(GPIO_WIMAX_CON0, S3C_GPIO_PULL_UP);
-	gpio_set_value(GPIO_WIMAX_IF_MODE1, GPIO_LEVEL_HIGH);	/* default idle */
-	gpio_set_value(GPIO_WIMAX_CON2, GPIO_LEVEL_HIGH);	/* active low interrupt */
+	/* default idle */
+	gpio_set_value(GPIO_WIMAX_IF_MODE1, GPIO_LEVEL_HIGH);
+	/* active low interrupt */
+	gpio_set_value(GPIO_WIMAX_CON2, GPIO_LEVEL_HIGH);
 	gpio_set_value(GPIO_WIMAX_CON1, GPIO_LEVEL_HIGH);
 }
 
 static void wimax_hsmmc_presence_check(int card_present)
 {
-	sdhci_s3c_force_presence_change(&s3c_device_hsmmc3);
+	mmc_force_presence_change(&s3c_device_hsmmc3);
 }
 
-#if 0
+#if defined(CONFIG_UART_SWITCH_AND_GPIO_DUMP_FOR_WIMAX)
 static void display_gpios(void)
 {
 	int val = 0;
@@ -169,7 +168,7 @@ static struct wimax732_platform_data wimax732_pdata = {
 	.get_sleep_mode = get_wimax_sleep_mode,
 	.is_modem_awake = is_wimax_active,
 	.wakeup_assert = wimax_wakeup_assert,
-#if 0
+#if defined(CONFIG_UART_SWITCH_AND_GPIO_DUMP_FOR_WIMAX)
 	.uart_wimax = switch_uart_wimax,
 	.uart_ap = switch_uart_ap,
 	.gpio_display = display_gpios,
@@ -183,7 +182,6 @@ static int gpio_wimax_power(int enable)
 {
 	if (!enable)
 		goto wimax_power_off;
-	
 	pr_err("Wimax power ON");
 	if (wimax732_pdata.g_cfg->wimax_mode != SDIO_MODE) {
 		switch_usb_wimax();
@@ -210,15 +208,14 @@ static int gpio_wimax_power(int enable)
 	gpio_set_value(GPIO_WIMAX_RESET_N, GPIO_LEVEL_LOW);
 	mdelay(3);
 	gpio_set_value(GPIO_WIMAX_RESET_N, GPIO_LEVEL_HIGH);
-	
 	return WIMAX_POWER_SUCCESS;
  wimax_power_off:
 	wimax_deinit_gpios();
 	pr_err("Wimax power OFF");
 
-	if (wimax732_pdata.g_cfg->wimax_mode != SDIO_MODE) {
+	if (wimax732_pdata.g_cfg->wimax_mode != SDIO_MODE)
 		s3c_bat_use_wimax(0);
-	}
+
 	wimax_on_pin_conf(0);
 
 	return WIMAX_POWER_SUCCESS;

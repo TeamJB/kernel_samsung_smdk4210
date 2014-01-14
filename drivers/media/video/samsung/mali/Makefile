@@ -1,9 +1,9 @@
 #
 # Copyright (C) 2010 ARM Limited. All rights reserved.
-#
+# 
 # This program is free software and is provided to you under the terms of the GNU General Public License version 2
 # as published by the Free Software Foundation, and any use by you of this program is subject to the terms of such GNU licence.
-#
+# 
 # A copy of the licence is included with the program, and can also be obtained from Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #
@@ -41,7 +41,7 @@ ifeq ($(CONFIG_PM),y)
 USING_PMM=1
 endif
 
-ifeq ($(CONFIG_PM_RUNTIME),y)
+ifeq ($(CONFIG_PM_RUNTIME),y)  
 USING_MALI_RUN_TIME_PM=1
 endif
 
@@ -50,12 +50,17 @@ USING_GPU_UTILIZATION=1
 USING_MALI_DVFS_ENABLED=1
 endif
 
-ifeq ($(CONFIG_VIDEO_MALI400MP_DEBUG),y)
+ifeq ($(CONFIG_VIDEO_MALI400MP_UMP_DEBUG),y)
 BUILD=debug
 endif
 
+ifeq ($(CONFIG_VIDEO_MALI400MP_STREAMLINE_PROFILING),y)
+USING_PROFILING=1
+USING_TRACEPOINTS=1
+endif
+
 # set up defaults if not defined by the user
-PANIC_ON_WATCHDOG_TIMEOUT ?= 1
+PANIC_ON_WATCHDOG_TIMEOUT ?= 1 
 USING_MALI400 ?= 1
 USING_MMU ?= 1
 USING_DED ?= 0
@@ -70,14 +75,14 @@ USING_MALI_PMU ?= 0
 USING_GPU_UTILIZATION ?= 0
 OS_MEMORY_KERNEL_BUFFER_SIZE_IN_MB ?= 6
 USING_PROFILING ?= 0
+USING_TRACEPOINTS ?= 0
 USING_MALI_MAJOR_PREDEFINE = 1
 USING_MALI_DVFS_ENABLED ?= 0
 TIMESTAMP ?= default
-BUILD ?= release
+BUILD ?= release 
 USING_MALI_PMM_EARLYSUSPEND ?= 0
 #USING_KERNEL_WITH_DMA_ALLOC_PHYS_PAGE ?= 0
 CONFIG_MALI_MEM_SIZE ?= 64
-USING_MALI_SLP_GLOBAL_LOCK ?= 1
 
 #config validtion check
 ifeq ($(USING_OS_MEMORY),1)
@@ -112,6 +117,8 @@ DEFINES += -DMALI_DVFS_ENABLED=$(USING_MALI_DVFS_ENABLED)
 DEFINES += -DUSING_MALI_PMM_EARLYSUSPEND=$(USING_MALI_PMM_EARLYSUSPEND)
 DEFINES += -DMALI_STATE_TRACKING=1
 DEFINES += -DMALI_OS_MEMORY_KERNEL_BUFFER_SIZE_IN_MB=$(OS_MEMORY_KERNEL_BUFFER_SIZE_IN_MB)
+DEFINES += -DMALI_TRACEPOINTS_ENABLED=$(USING_TRACEPOINTS)
+DEFINES += -DMALI_REBOOTNOTIFIER
 
 ifeq ($(BUILD),debug)
 DEFINES += -DDEBUG
@@ -121,7 +128,7 @@ endif
 DEFINES += -DMALI_UKK_HAS_IMPLICIT_MMAP_CLEANUP
 
 # UMP
-ifeq ($(CONFIG_VIDEO_UMP),y)
+ifeq ($(CONFIG_VIDEO_MALI400MP_UMP),y)
 	DEFINES += -DMALI_USE_UNIFIED_MEMORY_PROVIDER=1 -DHAVE_UNLOCKED_IOCTL
 	EXTRA_CFLAGS += -I$(MALI_FILE_PREFIX)/../ump/include
 else
@@ -129,7 +136,7 @@ else
 endif
 
 # Target build file
-obj-$(CONFIG_VIDEO_MALI400MP)		+= mali.o
+obj-$(CONFIG_VIDEO_MALI400MP_UMP)	+= mali.o
 
 # Use our defines when compiling
 # MALI
@@ -137,17 +144,17 @@ INCLUDES = \
 		-I$(MALI_FILE_PREFIX)\
 		-I$(MALI_FILE_PREFIX)/platform\
 		-I$(MALI_FILE_PREFIX)/common \
-		-I$(MALI_FILE_PREFIX)/linux
+		-I$(MALI_FILE_PREFIX)/linux 
 
 EXTRA_CFLAGS += $(INCLUDES)\
-		$(DEFINES)
+		$(DEFINES) 
 
 
 EXTRA_CFLAGS += -I$(MALI_FILE_PREFIX)/linux/license/gpl
 EXTRA_CFLAGS += -I$(MALI_FILE_PREFIX)/common/pmm
 
 # Source files which always are included in a build
-ifeq ($(CONFIG_VIDEO_UMP),y)
+ifeq ($(CONFIG_VIDEO_MALI400MP_UMP),y)
 OSKFILES=\
         $(FILES_PREFIX)$(OSKOS)/mali_osk_irq.o \
         $(FILES_PREFIX)$(OSKOS)/mali_osk_low_level_mem.o \
@@ -168,7 +175,7 @@ OSKFILES=\
         $(FILES_PREFIX)$(OSKOS)/mali_osk_notification.o \
         $(FILES_PREFIX)$(OSKOS)/mali_osk_time.o \
         $(FILES_PREFIX)$(OSKOS)/mali_osk_timers.o
-endif #($(CONFIG_VIDEO_UMP),y)
+endif #($(CONFIG_VIDEO_MALI400MP_UMP),y)
 
 ifeq ($(CONFIG_CPU_EXYNOS4210),y)
 	MALI_PLATFORM_FILE = platform/orion-m400/mali_platform.o
@@ -193,14 +200,23 @@ mali-y := \
     $(KBUILDROOT)linux/mali_kernel_sysfs.o \
 	$(KBUILDROOT)$(MALI_PLATFORM_FILE) \
 	$(KBUILDROOT)$(OSKFILES) \
-	$(KBUILDROOT)$(UKKFILES)
+	$(KBUILDROOT)$(UKKFILES) 
 	#__malidrv_build_info.o
 
 ifeq ($(USING_PROFILING),1)
+EXTRA_CFLAGS += -I$(MALI_FILE_PREFIX)/timestamp-default
+EXTRA_CFLAGS += -I$(MALI_FILE_PREFIX)/profiling/include
 mali-y += \
 	common/mali_kernel_profiling.o \
-	timestamp-$(TIMESTAMP)/mali_timestamp.o
+	timestamp-$(TIMESTAMP)/mali_timestamp.o \
+	linux/mali_ukk_profiling.o
+
 EXTRA_CFLAGS += -I$(KBUILD_EXTMOD)/timestamp-$(TIMESTAMP)
+endif
+
+ifeq ($(USING_TRACEPOINTS),1)
+mali-y += \
+	linux/mali_osk_profiling.o
 endif
 
 # Selecting files to compile by parsing the config file
@@ -256,12 +272,6 @@ endif #($(USING_MALI_DVFS_ENABLED),1)
 
 ifeq ($(PANIC_ON_WATCHDOG_TIMEOUT),1)
 	EXTRA_CFLAGS += -DUSING_KERNEL_PANIC
-endif
-
-# Mali SLP Global lock feature
-ifeq ($(USING_MALI_SLP_GLOBAL_LOCK),1)
-mali-y += \
-	linux/mali_slp_global_lock.o
 endif
 
 # Get subversion revision number, fall back to 0000 if no svn info is available

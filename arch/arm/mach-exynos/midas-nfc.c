@@ -16,12 +16,22 @@ static unsigned int nfc_gpio_table[][4] = {
 
 static inline void nfc_setup_gpio(void)
 {
+	int err = 0;
 	int array_size = ARRAY_SIZE(nfc_gpio_table);
 	u32 i, gpio;
 	for (i = 0; i < array_size; i++) {
 		gpio = nfc_gpio_table[i][0];
-		s3c_gpio_cfgpin(gpio, S3C_GPIO_SFN(nfc_gpio_table[i][1]));
-		s3c_gpio_setpull(gpio, nfc_gpio_table[i][3]);
+
+		err = s3c_gpio_cfgpin(gpio, S3C_GPIO_SFN(nfc_gpio_table[i][1]));
+		if (err < 0)
+			pr_err("%s, s3c_gpio_cfgpin gpio(%d) fail(err = %d)\n",
+				__func__, i, err);
+
+		err = s3c_gpio_setpull(gpio, nfc_gpio_table[i][3]);
+		if (err < 0)
+			pr_err("%s, s3c_gpio_setpull gpio(%d) fail(err = %d)\n",
+				__func__, i, err);
+
 		if (nfc_gpio_table[i][2] != 2)
 			gpio_set_value(gpio, nfc_gpio_table[i][2]);
 	}
@@ -52,21 +62,32 @@ int __init midas_nfc_init(int i2c_bus)
 #else
 static int __init midas_nfc_init(void)
 {
-#if defined(CONFIG_MACH_C1) || defined(CONFIG_MACH_C1VZW) || \
-	defined(CONFIG_MACH_M3)	|| defined(CONFIG_MACH_M0_CTC)
+	int ret = 0;
+#if defined(CONFIG_MACH_C1) || \
+	defined(CONFIG_MACH_M0_CTC)
 #define I2C_BUSNUM_PN65N	(system_rev == 3 ? 0 : 5)
-#elif defined(CONFIG_MACH_M0) || \
-	defined(CONFIG_MACH_JENGA) || defined(CONFIG_MACH_S2PLUS)
+#elif defined(CONFIG_MACH_M3)
+#define I2C_BUSNUM_PN65N	12
+#elif defined(CONFIG_MACH_M0)
 #define I2C_BUSNUM_PN65N	(system_rev == 3 ? 12 : 5)
+#elif defined(CONFIG_MACH_T0)
+#define I2C_BUSNUM_PN65N	(system_rev == 0 ? 5 : 12)
+#elif defined(CONFIG_MACH_BAFFIN)
+#define I2C_BUSNUM_PN65N	5
 #else
 #define I2C_BUSNUM_PN65N	12
 #endif
 
 	nfc_setup_gpio();
 
-	i2c_add_devices(I2C_BUSNUM_PN65N, &i2c_dev_pn65n, 1);
+	ret = i2c_add_devices(I2C_BUSNUM_PN65N, &i2c_dev_pn65n, 1);
+	if (ret < 0) {
+		pr_err("%s, i2c%d adding i2c fail(err=%d)\n",
+			__func__, I2C_BUSNUM_PN65N, ret);
+		return ret;
+	}
 
-	return 0;
+	return ret;
 }
 module_init(midas_nfc_init);
 #endif

@@ -194,7 +194,7 @@ void s3c_pm_do_restore(struct sleep_save *ptr, int count)
 		S3C_PMDBG("restore %p (restore %08lx, was %08x)\n",
 			  ptr->reg, ptr->val, __raw_readl(ptr->reg));
 #else
-		printk(KERN_DEBUG "restore %p (restore %08lx, was %08x)\n",
+		S3C_PMDBG("restore %p (restore %08lx, was %08x)\n",
 		       ptr->reg, ptr->val, __raw_readl(ptr->reg));
 #endif
 
@@ -215,8 +215,13 @@ void s3c_pm_do_restore(struct sleep_save *ptr, int count)
 
 void s3c_pm_do_restore_core(struct sleep_save *ptr, int count)
 {
-	for (; count > 0; count--, ptr++)
+	for (; count > 0; count--, ptr++) {
+#if !defined(CONFIG_CPU_EXYNOS4210)
+		pr_debug("restore_core %p (restore %08lx, was %08x)\n",
+		       ptr->reg, ptr->val, __raw_readl(ptr->reg));
+#endif
 		__raw_writel(ptr->val, ptr->reg);
+	}
 }
 
 /* s3c2410_pm_show_resume_irqs
@@ -242,6 +247,7 @@ void (*pm_cpu_sleep)(void);
 void (*pm_cpu_restore)(void);
 int (*pm_prepare)(void);
 void (*pm_finish)(void);
+unsigned int (*pm_check_eint_pend)(void);
 
 #define any_allowed(mask, allow) (((mask) & (allow)) != (allow))
 
@@ -249,7 +255,9 @@ void (*pm_finish)(void);
  *
  * central control for sleep/resume process
 */
-
+#ifdef CONFIG_FAST_BOOT
+extern bool fake_shut_down;
+#endif
 static int s3c_pm_enter(suspend_state_t state)
 {
 	/* ensure the debug is initialised (if enabled) */
@@ -273,6 +281,15 @@ static int s3c_pm_enter(suspend_state_t state)
 		printk(KERN_ERR "%s: No wake-up sources!\n", __func__);
 		printk(KERN_ERR "%s: Aborting sleep\n", __func__);
 		return -EINVAL;
+	}
+
+	if (pm_check_eint_pend) {
+		u32 pending_eint = pm_check_eint_pend();
+		if (pending_eint) {
+			pr_warn("%s: Aborting sleep, EINT PENDING(0x%08x)\n",
+					__func__, pending_eint);
+			return -EBUSY;
+		}
 	}
 
 	/* save all necessary core registers not covered by the drivers */
@@ -301,6 +318,24 @@ static int s3c_pm_enter(suspend_state_t state)
 
 	s3c_pm_check_store();
 
+#ifdef CONFIG_FAST_BOOT
+	if (fake_shut_down) {
+#if defined(CONFIG_SEC_MODEM) || defined(CONFIG_QC_MODEM)
+		/* Masking external wake up source
+		 * only enable  power key, FUEL ALERT, AP/IF PMIC IRQ
+		 * and SIM Detect Irq
+		 */
+		__raw_writel(0xdf77df7f, S5P_EINT_WAKEUP_MASK);
+#else
+		/* Masking external wake up source
+		 * only enable  power key, FUEL ALERT, AP/IF PMIC IRQ */
+		__raw_writel(0xff77df7f, S5P_EINT_WAKEUP_MASK);
+#endif
+		/* disable all system int */
+		__raw_writel(0xffffffff, S5P_WAKEUP_MASK);
+	}
+#endif
+
 	/* send the cpu to sleep... */
 
 	s3c_pm_arch_stop_clocks();
@@ -310,6 +345,11 @@ static int s3c_pm_enter(suspend_state_t state)
 	/* s3c_cpu_save will also act as our return point from when
 	 * we resume as it saves its own register state and restores it
 	 * during the resume.  */
+
+	printk(KERN_ALERT "ARM_COREx_STATUS CORE1[0x%08x], CORE2[0x%08x], CORE3[0x%08x]\n",
+			__raw_readl(S5P_VA_PMU + 0x2084),
+			__raw_readl(S5P_VA_PMU + 0x2104),
+			__raw_readl(S5P_VA_PMU + 0x2184));
 
 	s3c_cpu_save(0, PLAT_PHYS_OFFSET - PAGE_OFFSET);
 
@@ -349,8 +389,11 @@ static int s3c_pm_enter(suspend_state_t state)
 static int s3c_pm_prepare(void)
 {
 	/* prepare check area if configured */
-
+#if defined(CONFIG_MACH_P8LTE) \
+	|| defined(CONFIG_MACH_U1_NA_SPR) \
+	|| defined(CONFIG_MACH_U1_NA_USCC)
 	disable_hlt();
+#endif
 	s3c_pm_check_prepare();
 
 	if (pm_prepare)
@@ -365,7 +408,11 @@ static void s3c_pm_finish(void)
 		pm_finish();
 
 	s3c_pm_check_cleanup();
+#if defined(CONFIG_MACH_P8LTE) \
+	|| defined(CONFIG_MACH_U1_NA_SPR) \
+	|| defined(CONFIG_MACH_U1_NA_USCC)
 	enable_hlt();
+#endif
 }
 
 #if defined(CONFIG_CHARGER_MANAGER)

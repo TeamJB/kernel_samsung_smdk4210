@@ -29,7 +29,12 @@
 #include <linux/sensor/lsm330dlc_accel.h>
 #include <linux/sensor/lsm330dlc_gyro.h>
 #include <linux/sensor/ak8975.h>
+#ifdef CONFIG_SENSORS_TAOS
+#include <linux/sensor/taos.h>
+#endif
+#ifdef CONFIG_SENSORS_GP2A
 #include <linux/sensor/gp2a.h>
+#endif
 #include <linux/cma.h>
 #include <linux/jack.h>
 #include <linux/uart_select.h>
@@ -63,7 +68,9 @@
 #include <plat/s3c64xx-spi.h>
 #include <plat/csis.h>
 #include <plat/udc-hs.h>
+#ifdef CONFIG_EXYNOS4_DEV_FIMC_IS
 #include <media/exynos_fimc_is.h>
+#endif
 #include <plat/regs-fb.h>
 #include <plat/fb-core.h>
 #include <plat/mipi_dsim2.h>
@@ -105,6 +112,10 @@
 #include <linux/host_notify.h>
 
 #include "board-mobile.h"
+
+#ifdef CONFIG_SEC_DEBUG
+#include <mach/sec_debug.h>
+#endif
 
 enum gpio_i2c {
 	I2C_LAST_HW	= 8, /* I2C0~8 are reserved */
@@ -248,7 +259,7 @@ static void exynos_dwmci_cfg_gpio(int width)
  * max_req_size = max_seg_size * max_blk_count
  **/
 static struct block_settings exynos_dwmci_blk_setting = {
-	.max_segs		= 0x100,
+	.max_segs		= 0x1000,
 	.max_blk_size		= 0x200,
 	.max_blk_count		= 0x10000,
 	.max_seg_size		= 0x1000,
@@ -261,12 +272,14 @@ static struct dw_mci_board exynos_dwmci_pdata __initdata = {
 				DW_MCI_QUIRK_HIGHSPEED,
 	.bus_hz			= 100 * 1000 * 1000,
 	.caps			= MMC_CAP_UHS_DDR50 | MMC_CAP_1_8V_DDR |
-				MMC_CAP_8_BIT_DATA,
+				MMC_CAP_8_BIT_DATA | MMC_CAP_CMD23,
+	.caps2			= MMC_CAP2_PACKED_CMD,
 	.detect_delay_ms	= 200,
 	.hclk_name		= "dwmci",
 	.cclk_name		= "sclk_dwmci",
 	.cfg_gpio		= exynos_dwmci_cfg_gpio,
 	.blk_settings		= &exynos_dwmci_blk_setting,
+	.buf_size		= PAGE_SIZE << 4,
 };
 #else
 static struct s3c_mshci_platdata exynos4_mshc_pdata __initdata = {
@@ -274,7 +287,8 @@ static struct s3c_mshci_platdata exynos4_mshc_pdata __initdata = {
 	.fifo_depth		= 0x80,
 	.max_width              = 8,
 	.host_caps              = MMC_CAP_8_BIT_DATA | MMC_CAP_1_8V_DDR |
-				  MMC_CAP_UHS_DDR50,
+				  MMC_CAP_UHS_DDR50 | MMC_CAP_CMD23,
+	.host_caps2		= MMC_CAP2_PACKED_CMD,
 };
 #endif
 
@@ -318,7 +332,7 @@ DEFINE_MMC_CARD_NOTIFIER(3)
  * that can't be told by SDHCI regs
  */
 
-void sdhci_s3c_force_presence_change(struct platform_device *pdev)
+void mmc_force_presence_change(struct platform_device *pdev)
 {
 	void (*notify_func)(struct platform_device *, int state) = NULL;
 	mutex_lock(&notify_lock);
@@ -331,7 +345,7 @@ void sdhci_s3c_force_presence_change(struct platform_device *pdev)
 		pr_warn("%s: called for device with no notifier\n", __func__);
 	mutex_unlock(&notify_lock);
 }
-EXPORT_SYMBOL_GPL(sdhci_s3c_force_presence_change);
+EXPORT_SYMBOL_GPL(mmc_force_presence_change);
 
 static struct s3c_sdhci_platdata slp_midas_hsmmc3_pdata __initdata = {
 /* new code for brm4334 */
@@ -596,14 +610,14 @@ static struct max77693_led_platform_data max77693_led_pdata = {
 	.leds[0].id = MAX77693_FLASH_LED_1,
 	.leds[0].timer = MAX77693_FLASH_TIME_1000MS,
 	.leds[0].timer_mode = MAX77693_TIMER_MODE_MAX_TIMER,
-	.leds[0].cntrl_mode = MAX77693_LED_CTRL_BY_I2C,
+	.leds[0].cntrl_mode = MAX77693_LED_CTRL_BY_FLASHSTB,
 	.leds[0].brightness = MAX_FLASH_DRV_LEVEL,
 
 	.leds[1].name = "torch-sec",
 	.leds[1].id = MAX77693_TORCH_LED_1,
 	.leds[1].timer = MAX77693_DIS_TORCH_TMR,
 	.leds[1].timer_mode = MAX77693_TIMER_MODE_MAX_TIMER,
-	.leds[1].cntrl_mode = MAX77693_LED_CTRL_BY_I2C,
+	.leds[1].cntrl_mode = MAX77693_LED_CTRL_BY_FLASHSTB,
 	.leds[1].brightness = MAX_TORCH_DRV_LEVEL,
 };
 #endif
@@ -751,6 +765,17 @@ static struct platform_device device_i2c_fm_radio = {
 
 static struct si4705_pdata naples_fm_radio_info = {
 	.reset = naples_si4705_reset,
+	.pdata_values = (SI4705_PDATA_BIT_VOL_STEPS |
+			 SI4705_PDATA_BIT_VOL_TABLE |
+			 SI4705_PDATA_BIT_RSSI_THRESHOLD |
+			 SI4705_PDATA_BIT_SNR_THRESHOLD),
+	.rx_vol_steps = 16,
+	.rx_vol_table = {	0x0, 0x13, 0x16, 0x19,
+				0x1C, 0x1F, 0x22, 0x25,
+				0x28, 0x2B, 0x2E, 0x31,
+				0x34, 0x37, 0x3A, 0x3D	},
+	.rx_seek_tune_rssi_threshold = 0x00,
+	.rx_seek_tune_snr_threshold = 0x01,
 };
 
 static struct i2c_board_info i2c_devs_fm_radio[] __initdata = {
@@ -1016,9 +1041,12 @@ static struct wm8994_pdata wm1811_pdata = {
 	/* Regulated mode at highest output voltage */
 	.micbias = {0x3f, 0x3e},
 
-	.micd_lvl_sel = 0x72,
+	.micd_lvl_sel = 0xFF,
 
 	.ldo_ena_always_driven = true,
+
+	/* external cap for mic bias2 */
+	.jd_ext_cap = 1,
 };
 #endif
 
@@ -1032,6 +1060,29 @@ static struct i2c_board_info i2c_devs4[] __initdata = {
 	},
 #endif
 };
+
+static void naples_audio_init(void)
+{
+	int err;
+
+	/* Main Microphone BIAS */
+	err = gpio_request(GPIO_MIC_BIAS_EN_00, "MICBIAS_EN");
+	if (err) {
+		pr_err("%s: MIC_BIAS_EN GPIO set error", __func__);
+		return;
+	}
+	gpio_direction_output(GPIO_MIC_BIAS_EN_00, 0);
+	gpio_free(GPIO_MIC_BIAS_EN_00);
+
+	/* Sub Microphone BIAS */
+	err = gpio_request(GPIO_SUB_MIC_BIAS_EN_00, "SUB_MICBIAS_EN");
+	if (err) {
+		pr_err("%s: SUB_MIC_BIAS_EN GPIO set error", __func__);
+		return;
+	}
+	gpio_direction_output(GPIO_SUB_MIC_BIAS_EN_00, 0);
+	gpio_free(GPIO_SUB_MIC_BIAS_EN_00);
+}
 
 /* I2C GPIO: NFC */
 static struct i2c_gpio_platform_data gpio_i2c_nfc = {
@@ -1066,6 +1117,16 @@ static struct platform_device bcm4334_bluetooth_device = {
 }
 
 static struct gpio_keys_button midas_buttons[] = {
+#ifdef CONFIG_SEC_DEBUG
+	GPIO_KEYS(KEY_VOLUMEUP, GPIO_VOL_UP,
+		  1, 0, sec_debug_check_crash_key),
+	GPIO_KEYS(KEY_VOLUMEDOWN, GPIO_VOL_DOWN,
+		  1, 0, sec_debug_check_crash_key),
+	GPIO_KEYS(KEY_POWER, GPIO_nPOWER,
+		  1, 1, sec_debug_check_crash_key),
+	GPIO_KEYS(KEY_MENU, GPIO_OK_KEY,
+			  1, 1, NULL),
+#else
 	GPIO_KEYS(KEY_VOLUMEUP, GPIO_VOL_UP,
 		  1, 0, NULL),
 	GPIO_KEYS(KEY_VOLUMEDOWN, GPIO_VOL_DOWN,
@@ -1074,6 +1135,8 @@ static struct gpio_keys_button midas_buttons[] = {
 		  1, 1, NULL),
 	GPIO_KEYS(KEY_MENU, GPIO_OK_KEY,
 		  1, 1, NULL),
+#endif
+
 };
 
 static struct gpio_keys_platform_data midas_gpiokeys_platform_data = {
@@ -1173,13 +1236,13 @@ static void lps331ap_gpio_init(void)
 };
 #endif
 
-#if defined(CONFIG_SENSORS_BMA250)
+#if defined(CONFIG_SENSORS_BMA254)
 static struct i2c_gpio_platform_data bma250_i2c_gpio_data = {
 	.sda_pin	= GPIO_GSENSE_SDA_18V,
 	.scl_pin	= GPIO_GSENSE_SCL_18V,
 };
 
-static struct platform_device bma250_i2c_gpio_device = {
+static struct platform_device bma254_i2c_gpio_device = {
 	.name	= "i2c-gpio",
 	.id	= I2C_GSENSE,
 	.dev	= {
@@ -1187,20 +1250,19 @@ static struct platform_device bma250_i2c_gpio_device = {
 	},
 };
 
-static struct i2c_board_info bma250_i2c_devices[] __initdata = {
+static struct i2c_board_info bma254_i2c_devices[] __initdata = {
 	{
-		I2C_BOARD_INFO("bma250", 0x18),
-		/*.irq = MSM_GPIO_TO_INT(82),*/
+		I2C_BOARD_INFO("bma254", 0x18),
 		.irq = GPIO_ACC_INT,
 		.platform_data = &bma250_i2c_gpio_data,
 	},
 };
 
-static int __init bma250_gpio_init(void)
+static int __init bma254_gpio_init(void)
 {
 	int ret;
 
-	pr_err("bma250_gpio_init\n");
+	pr_err("bma254_gpio_init\n");
 
 	s3c_gpio_cfgpin(GPIO_GSENSE_SDA_18V, S3C_GPIO_OUTPUT);
 	s3c_gpio_setpull(GPIO_GSENSE_SDA_18V, S3C_GPIO_PULL_UP);
@@ -1210,10 +1272,10 @@ static int __init bma250_gpio_init(void)
 	s3c_gpio_setpull(GPIO_GSENSE_SCL_18V, S3C_GPIO_PULL_UP);
 	s5p_gpio_set_drvstr(GPIO_GSENSE_SCL_18V, S5P_GPIO_DRVSTR_LV1);
 
-	ret = gpio_request(GPIO_ACC_INT, "bma250_accel_irq");
+	ret = gpio_request(GPIO_ACC_INT, "bma254_accel_irq");
 
 	if (ret)
-		pr_err("Failed to request gpio bma250_accel_irq = %d\n", ret);
+		pr_err("Failed to request gpio bma254_accel_irq = %d\n", ret);
 
 	/* Accelerometer sensor interrupt pin initialization */
 	s3c_gpio_cfgpin(GPIO_ACC_INT, S3C_GPIO_INPUT);
@@ -1221,7 +1283,7 @@ static int __init bma250_gpio_init(void)
 	s3c_gpio_setpull(GPIO_ACC_INT, S3C_GPIO_PULL_NONE);
 	s5p_gpio_set_drvstr(GPIO_ACC_INT, S5P_GPIO_DRVSTR_LV1);
 	s5p_register_gpio_interrupt(GPIO_ACC_INT);
-	bma250_i2c_devices[0].irq = gpio_to_irq(GPIO_ACC_INT);
+	bma254_i2c_devices[0].irq = gpio_to_irq(GPIO_ACC_INT);
 
 	return 0;
 }
@@ -1290,6 +1352,40 @@ static struct platform_device device_i2c_mhl_d = {
 	.id = I2C_MHL_D,
 	.dev.platform_data = &gpio_i2c_mhl_d,
 };
+
+#ifdef CONFIG_SENSORS_TAOS
+static struct i2c_gpio_platform_data gpio_i2c_psense = {
+	.sda_pin    = GPIO_RGB_SDA_1_8V,
+	.scl_pin    = GPIO_RGB_SCL_1_8V,
+	.udelay		= 2,
+};
+
+static struct platform_device device_i2c_psense = {
+	.name       = "i2c-gpio",
+	.id     = I2C_PSENSE,
+	.dev        = {
+		.platform_data  = &gpio_i2c_psense,
+	},
+};
+
+static struct taos_platform_data taos_pdata = {
+	.p_out = GPIO_PS_ALS_INT,
+};
+
+static struct i2c_board_info taos_i2c_board_info[] = {
+	{
+		I2C_BOARD_INFO("taos", 0x39),
+		.platform_data	= &taos_pdata,
+	},
+};
+
+static void optical_gpio_init(void)
+{
+	pr_info("%s\n", __func__);
+
+	s3c_gpio_setpull(GPIO_PS_ALS_INT, S3C_GPIO_PULL_UP);
+}
+#endif
 
 #ifdef CONFIG_SENSORS_GP2A
 /* I2C GPIO: PS_ALS (PSENSE) */
@@ -1485,11 +1581,14 @@ static struct platform_device *slp_midas_devices[] __initdata = {
 #ifdef CONFIG_SENSORS_LPS331
 	&device_i2c_bsense,	/* barometer lps331ap */
 #endif
-#if defined(CONFIG_SENSORS_BMA250)
-	&bma250_i2c_gpio_device,
+#if defined(CONFIG_SENSORS_BMA254)
+	&bma254_i2c_gpio_device,
 #endif
 	&device_i2c_msense, /* magnetic ak8975c */
 	&device_i2c_mhl,
+#ifdef CONFIG_SENSORS_TAOS
+	&device_i2c_psense,
+#endif
 #ifdef CONFIG_SENSORS_GP2A
 	&device_i2c_psense, /* PS_ALS gp2a020 */
 #endif
@@ -1557,7 +1656,6 @@ static struct platform_device *slp_midas_devices[] __initdata = {
 #ifdef CONFIG_EXYNOS4_DEV_FIMC_IS
 	&exynos4_device_fimc_is,
 #endif
-/*
 #ifdef CONFIG_VIDEO_FIMC
 	&s3c_device_fimc0,
 	&s3c_device_fimc1,
@@ -1569,10 +1667,9 @@ static struct platform_device *slp_midas_devices[] __initdata = {
 	&s5p_device_fimc2,
 	&s5p_device_fimc3,
 #endif
-*/
 #if defined(CONFIG_VIDEO_FIMC_MIPI)
-/*	&s3c_device_csis0,
-	&s3c_device_csis1,*/
+	&s3c_device_csis0,
+	&s3c_device_csis1,
 #endif
 #if defined(CONFIG_VIDEO_MFC5X) || defined(CONFIG_VIDEO_SAMSUNG_S5P_MFC)
 	&s5p_device_mfc,
@@ -1581,8 +1678,10 @@ static struct platform_device *slp_midas_devices[] __initdata = {
 	&SYSMMU_PLATDEV(mfc_l),
 	&SYSMMU_PLATDEV(mfc_r),
 #endif
+#ifdef CONFIG_VIDEO_EXYNOS_FIMC_LITE
 	&exynos_device_flite0,
 	&exynos_device_flite1,
+#endif
 	&midas_charger_manager,
 	&midas_keypad,
 	&midas_jack,
@@ -1603,7 +1702,6 @@ static struct platform_device *slp_midas_devices[] __initdata = {
 	&host_notifier_device,
 
 };
-
 
 #ifdef CONFIG_EXYNOS4_SETUP_THERMAL
 /* below temperature base on the celcius degree */
@@ -1638,7 +1736,7 @@ static void __init exynos4_reserve_mem(void)
 			.start = 0
 		},
 #endif
-#if !defined(CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION) && \
+#if !defined(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION) && \
 	defined(CONFIG_VIDEO_SAMSUNG_MEMSIZE_FIMC1)
 		{
 			.name = "fimc1",
@@ -1683,7 +1781,7 @@ static void __init exynos4_reserve_mem(void)
 			.start = 0
 		},
 #endif
-#if !defined(CONFIG_EXYNOS4_CONTENT_PATH_PROTECTION) && \
+#if !defined(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION) && \
 	defined(CONFIG_VIDEO_SAMSUNG_S5P_MFC)
 		{
 			.name		= "b2",
@@ -1708,6 +1806,7 @@ static void __init exynos4_reserve_mem(void)
 			.start = 0
 		},
 #endif
+#ifdef CONFIG_EXYNOS4_DEV_FIMC_IS
 		{
 			.name = "fimc_is",
 			.size = CONFIG_VIDEO_EXYNOS_MEMSIZE_FIMC_IS * SZ_1K,
@@ -1716,12 +1815,14 @@ static void __init exynos4_reserve_mem(void)
 			},
 			.start = 0
 		},
+#endif
 		{
 			.size = 0
 		},
 	};
 
 	static const char map[] __initconst =
+		"s3cfb.0=fimd;"
 		"s3c-fimc.0=fimc0;s3c-fimc.1=fimc1;s3c-fimc.2=fimc2;s3c-fimc.3=fimc3;"
 		"exynos4210-fimc.0=fimc0;exynos4210-fimc.1=fimc1;exynos4210-fimc.2=fimc2;exynos4210-fimc.3=fimc3;"
 #ifdef CONFIG_VIDEO_MFC5X
@@ -1732,7 +1833,9 @@ static void __init exynos4_reserve_mem(void)
 		"s5p-mfc/a=b1;"
 		"s5p-mfc/b=b2;"
 #endif
+#ifdef CONFIG_EXYNOS4_DEV_FIMC_IS
 		"exynos4-fimc-is=fimc_is;"
+#endif
 #ifdef CONFIG_DRM_EXYNOS
 		"exynos-drm=drm"
 #endif
@@ -1754,6 +1857,12 @@ static void __init midas_map_io(void)
 #if defined(CONFIG_S5P_MEM_CMA)
 	exynos4_reserve_mem();
 #endif
+
+#ifdef CONFIG_SEC_DEBUG
+	/* as soon as INFORM6 is visible, sec_debug is ready to run */
+	sec_debug_init();
+#endif
+
 }
 
 #ifdef CONFIG_MDNIE_SUPPORT
@@ -1966,6 +2075,8 @@ static void __init midas_machine_init(void)
 				ARRAY_SIZE(i2c_devs_fm_radio));
 #endif
 
+	/* Audio Codec WM1811 */
+	naples_audio_init();
 	s3c_i2c4_set_platdata(NULL);
 	i2c_register_board_info(4, i2c_devs4, ARRAY_SIZE(i2c_devs4));
 
@@ -2001,10 +2112,10 @@ static void __init midas_machine_init(void)
 				ARRAY_SIZE(i2c_devs_bsense));
 #endif
 
-#ifdef CONFIG_SENSORS_BMA250
-	bma250_gpio_init();
-	i2c_register_board_info(I2C_GSENSE, bma250_i2c_devices,
-			ARRAY_SIZE(bma250_i2c_devices));
+#ifdef CONFIG_SENSORS_BMA254
+	bma254_gpio_init();
+	i2c_register_board_info(I2C_GSENSE, bma254_i2c_devices,
+			ARRAY_SIZE(bma254_i2c_devices));
 #endif
 
 	ak8975c_gpio_init();
@@ -2013,6 +2124,12 @@ static void __init midas_machine_init(void)
 	i2c_register_board_info(I2C_MSENSE, i2c_devs_msense,
 				ARRAY_SIZE(i2c_devs_msense));
 
+#ifdef CONFIG_SENSORS_TAOS
+	optical_gpio_init();
+	GPIO_I2C_PIN_SETUP(psense);
+	i2c_register_board_info(I2C_PSENSE, taos_i2c_board_info,
+				ARRAY_SIZE(taos_i2c_board_info));
+#endif
 #ifdef CONFIG_SENSORS_GP2A
 	optical_gpio_init();
 	GPIO_I2C_PIN_SETUP(psense);
@@ -2039,7 +2156,7 @@ static void __init midas_machine_init(void)
 				ARRAY_SIZE(i2c_devs_fuel));
 
 #ifdef CONFIG_EXYNOS4_DEV_DWMCI
-	exynos_dwmci_set_platdata(&exynos_dwmci_pdata);
+	exynos_dwmci_set_platdata(&exynos_dwmci_pdata, 0);
 #else
 	s3c_mshci_set_platdata(&exynos4_mshc_pdata);
 #endif
@@ -2049,9 +2166,8 @@ static void __init midas_machine_init(void)
 	exynos4_fimc_is_set_platdata(NULL);
 	exynos4_device_fimc_is.dev.parent = &exynos4_device_pd[PD_ISP].dev;
 #endif
-	/* FIMC */
-	/* naples_camera_init(); */
-
+	/* Init for Naples camera(FIMC) */
+	midas_camera_init();
 #ifdef CONFIG_VIDEO_SLP_DB8131M
 	i2c_register_board_info(I2C_VTCAM, i2c_devs_vtcam,
 				ARRAY_SIZE(i2c_devs_vtcam));

@@ -219,20 +219,13 @@ static void print_active_locks(int type)
 	list_for_each_entry(lock, &active_wake_locks[type], link) {
 		if (lock->flags & WAKE_LOCK_AUTO_EXPIRE) {
 			long timeout = lock->expires - jiffies;
-			if (timeout > 0) {
-#ifndef PRODUCT_SHIP
+			if (timeout > 0)
 				pr_info("active wake lock %s, time left %ld\n",
 					lock->name, timeout);
-#endif
-			} else if (print_expired) {
-#ifndef PRODUCT_SHIP
+			else if (print_expired)
 				pr_info("wake lock %s, expired\n", lock->name);
-#endif
-			}
 		} else {
-#ifndef PRODUCT_SHIP
 			pr_info("active wake lock %s\n", lock->name);
-#endif
 			if (!(debug_mask & DEBUG_EXPIRE))
 				print_expired = false;
 		}
@@ -262,6 +255,7 @@ long has_wake_lock(int type)
 {
 	long ret;
 	unsigned long irqflags;
+
 	spin_lock_irqsave(&list_lock, irqflags);
 	ret = has_wake_lock_locked(type);
 	if (ret && (debug_mask & DEBUG_WAKEUP) && type == WAKE_LOCK_SUSPEND)
@@ -301,7 +295,7 @@ static void suspend(struct work_struct *work)
 		pr_info("suspend: enter suspend, "
 			"(%d-%02d-%02d %02d:%02d:%02d.%09lu UTC)\n",
 			tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-			tm.tm_hour, tm.tm_min, tm.tm_sec, ts_exit.tv_nsec);
+			tm.tm_hour, tm.tm_min, tm.tm_sec, ts_entry.tv_nsec);
 	}
 
 	ret = pm_suspend(requested_suspend_state);
@@ -608,17 +602,18 @@ static int __init wakelocks_init(void)
 		goto err_platform_driver_register;
 	}
 
-	suspend_work_queue = create_singlethread_workqueue("suspend");
+	suspend_work_queue = alloc_workqueue("suspend", WQ_HIGHPRI, 0);
 	if (suspend_work_queue == NULL) {
 		ret = -ENOMEM;
 		goto err_suspend_work_queue;
 	}
 
-    sync_work_queue = create_singlethread_workqueue("sync_system_work");
+	sync_work_queue = create_singlethread_workqueue("sync_system_work");
 	if (sync_work_queue == NULL) {
 		ret = -ENOMEM;
 		goto err_sync_work_queue;
 	}
+
 #ifdef CONFIG_WAKELOCK_STAT
 	proc_create("wakelocks", S_IRUGO, NULL, &wakelock_stats_fops);
 #endif

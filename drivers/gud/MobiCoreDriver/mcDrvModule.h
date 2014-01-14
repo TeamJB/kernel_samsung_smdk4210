@@ -10,6 +10,10 @@
  * its internal structures and defines.
  *
  * <!-- Copyright Giesecke & Devrient GmbH 2009-2012 -->
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #ifndef _MC_DRV_KMOD_H_
@@ -68,6 +72,7 @@ struct mc_tuple {
 	void		*virtKernelAddr; /**< virtual Kernel start address */
 	void		*physAddr; /**< physical start address */
 	unsigned int	numPages; /**< number of pages */
+	unsigned int	reqSize; /** < requested size */
 };
 
 /**
@@ -181,7 +186,7 @@ struct mcTraceBuf {
 #define MCDRV_DBG(txt, ...) \
 	printk(KERN_INFO "mcDrvKMod [%d on CPU%d] %s(): " txt, \
 		task_pid_vnr(current), \
-		smp_processor_id(), \
+		raw_smp_processor_id(), \
 		__func__, \
 		##__VA_ARGS__)
 

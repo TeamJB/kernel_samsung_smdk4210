@@ -24,24 +24,37 @@
  */
 #if defined(CONFIG_CHARGER_BQ24191)
 #define SEC_CHARGER_I2C_SLAVEADDR	0x6a
-#else /* CONFIG_CHARGER_BQ24190 */
+#else
+/* bq24190, bq24192 */
 #define SEC_CHARGER_I2C_SLAVEADDR	0x6b
 #endif
 
-/* BQ24190 Registers. */
-#define BQ24190_INPUT_SOURCE_CTRL		0x00
-#define BQ24190_POWERON_CONFIG			0x01
-#define BQ24190_CHARGE_CURRENT_CTRL		0x02
-#define BQ24190_PRECHARGE_TERMINATION	0x03
-#define BQ24190_CHARGE_VOLTAGE_CTRL		0x04
-#define BQ24190_TERMINATION_TIMER_CTRL	0x05
-#define BQ24190_IR_COMP_THERMAL_REG		0x06
-#define BQ24190_MISC_OPERATION			0x07
-#define BQ24190_SYSTEM_STATUS			0x08
-#define BQ24190_FAULT					0x09
-#define BQ24190_VENDOR_PART_REV			0x0A
-
 #define BQ24190_CHARGING_ENABLE			0x20
 #define BQ24190_CHARGING_DONE			0x30
+
+/* BQ2419x Registers */
+
+/* Input Source Control */
+#define BQ24190_REG_INSRC	0x00
+/* Power-On Configuration */
+#define BQ24190_REG_PWRON_CFG	0x01
+/* Charge Current Control */
+#define BQ24190_REG_CHRG_C	0x02
+/* Pre-charge/Termination Current Control */
+#define BQ24190_REG_PCHRG_TRM_C	0x03
+/* Charge Voltage Control */
+#define BQ24190_REG_CHRG_V	0x04
+/* Charge Termination/Timer Control */
+#define BQ24190_REG_CHRG_TRM_TMR	0x05
+/* IR Compensation / Thermal Regulation Control */
+#define BQ24190_REG_IRCMP_TREG	0x06
+/* Misc Operation Control */
+#define BQ24190_REG_MISC_OP	0x07
+/* System Status */
+#define BQ24190_REG_STATUS	0x08
+/* Fault */
+#define BQ24190_REG_FAULT	0x09
+/* Vendor / Part / Revision Status */
+#define BQ24190_REG_DEVID	0x0A
 
 #endif /* __BQ24190_CHARGER_H */

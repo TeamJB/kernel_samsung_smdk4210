@@ -869,16 +869,17 @@ static void s5p_hdmi_print_phy_config(void)
 		return;
 	}
 
-	tvout_dbg("read buffer :\n");
+	printk(KERN_WARNING "read buffer :\n");
 
-	for (i = 1; i < size; i++) {
+	for (i = 0; i < size; i++) {
 		printk("0x%02x", read_buffer[i]);
 
-		if (i % 8)
+		if ((i+1) % 8)
 			printk(" ");
 		else
 			printk("\n");
 	}
+	printk(KERN_WARNING "\n");
 }
 #else
 static inline void s5p_hdmi_print_phy_config(void) {}
@@ -1083,12 +1084,21 @@ static int s5p_hdmi_phy_enable_oscpad(bool on, u8 *read_buffer)
 {
 	u8 buff[2];
 
+#if defined(CONFIG_CPU_EXYNOS4212) || defined(CONFIG_CPU_EXYNOS4412)
+	buff[0] = 0x0b;
+	if (on)
+		buff[1] = 0xd8;
+	else
+		buff[1] = 0x18;
+	read_buffer[0x0b] = buff[1];
+#else
 	buff[0] = 0x19;
 	if (on)
 		buff[1] = (read_buffer[0x19] & (~(3<<6))) | (1<<6);
 	else
 		buff[1] = (read_buffer[0x19] & (~(3<<6))) | (2<<6);
 	read_buffer[0x19] = buff[1];
+#endif
 
 	if (s5p_hdmi_i2c_phy_write(PHY_I2C_ADDRESS, 2, buff) != 0)
 		return -EINVAL;
@@ -1136,6 +1146,58 @@ void s5p_hdmi_reg_sw_reset(void)
 	s5p_hdmi_ctrl_clock(0);
 }
 
+#ifdef CONFIG_HDMI_TX_STRENGTH
+int s5p_hdmi_phy_set_tx_strength(u8 ch, u8 *value)
+{
+	u8 buff[2];
+
+	if (ch & TX_EMP_LVL) { /* REG10 BIT7:4 */
+		buff[0] = HDMI_PHY_I2C_REG10;
+		buff[1] = (value[TX_EMP_LVL_VAL] & 0x0f) << 4;
+		if (s5p_hdmi_i2c_phy_write(PHY_I2C_ADDRESS, 2, buff) != 0)
+			goto err_exit;
+	}
+
+	if (ch & TX_AMP_LVL) { /* REG10 BIT3:0, REG0F BIT7 */
+		buff[0] = HDMI_PHY_I2C_REG10;
+		buff[1] = (value[TX_AMP_LVL_VAL] & 0x0e) >> 1;
+		if (s5p_hdmi_i2c_phy_write(PHY_I2C_ADDRESS, 2, buff) != 0)
+			goto err_exit;
+		buff[0] = HDMI_PHY_I2C_REG0F;
+		buff[1] = (value[TX_AMP_LVL_VAL] & 0x01) << 7;
+		if (s5p_hdmi_i2c_phy_write(PHY_I2C_ADDRESS, 2, buff) != 0)
+			goto err_exit;
+	}
+
+	if (ch & TX_LVL_CH0) { /* REG04 BIT7:6 */
+		buff[0] = HDMI_PHY_I2C_REG04;
+		buff[1] = (value[TX_LVL_CH0_VAL] & 0x3) << 6;
+		if (s5p_hdmi_i2c_phy_write(PHY_I2C_ADDRESS, 2, buff) != 0)
+			goto err_exit;
+	}
+
+	if (ch & TX_LVL_CH1) { /* REG13 BIT1:0 */
+		buff[0] = HDMI_PHY_I2C_REG13;
+		buff[1] = (value[TX_LVL_CH1_VAL] & 0x3);
+		if (s5p_hdmi_i2c_phy_write(PHY_I2C_ADDRESS, 2, buff) != 0)
+			goto err_exit;
+	}
+
+	if (ch & TX_LVL_CH2) { /* REG17 BIT1:0 */
+		buff[0] = HDMI_PHY_I2C_REG17;
+		buff[1] = (value[TX_LVL_CH2_VAL] & 0x3);
+		if (s5p_hdmi_i2c_phy_write(PHY_I2C_ADDRESS, 2, buff) != 0)
+			goto err_exit;
+	}
+
+	return 0;
+
+err_exit:
+	pr_err("%s: failed to set tx strength\n", __func__);
+	return -1;
+}
+#endif
+
 int s5p_hdmi_phy_power(bool on)
 {
 	u32 size;
@@ -1163,11 +1225,21 @@ int s5p_hdmi_phy_power(bool on)
 				goto ret_on_err;
 			}
 
+#if defined(CONFIG_CPU_EXYNOS4212) || defined(CONFIG_CPU_EXYNOS4412)
+			s5p_hdmi_phy_control(true, 0x1d, 0x7, read_buffer);
+			s5p_hdmi_phy_control(true, 0x1d, 0x0, read_buffer);
+			s5p_hdmi_phy_control(true, 0x1d, 0x1, read_buffer);
+			s5p_hdmi_phy_control(true, 0x1d, 0x2, read_buffer);
+			s5p_hdmi_phy_control(true, 0x1d, 0x4, read_buffer);
+			s5p_hdmi_phy_control(true, 0x1d, 0x5, read_buffer);
+			s5p_hdmi_phy_control(true, 0x1d, 0x6, read_buffer);
+#else
 			s5p_hdmi_phy_control(true, 0x1, 0x5, read_buffer);
 			s5p_hdmi_phy_control(true, 0x1, 0x7, read_buffer);
 			s5p_hdmi_phy_control(true, 0x5, 0x5, read_buffer);
 			s5p_hdmi_phy_control(true, 0x17, 0x0, read_buffer);
 			s5p_hdmi_phy_control(true, 0x17, 0x1, read_buffer);
+#endif
 
 			s5p_hdmi_print_phy_config();
 		}
@@ -1185,11 +1257,22 @@ int s5p_hdmi_phy_power(bool on)
 			/* Disable OSC pad */
 			s5p_hdmi_phy_enable_oscpad(false, read_buffer);
 
+#if defined(CONFIG_CPU_EXYNOS4212) || defined(CONFIG_CPU_EXYNOS4412)
+			s5p_hdmi_phy_control(false, 0x1d, 0x7, read_buffer);
+			s5p_hdmi_phy_control(false, 0x1d, 0x0, read_buffer);
+			s5p_hdmi_phy_control(false, 0x1d, 0x1, read_buffer);
+			s5p_hdmi_phy_control(false, 0x1d, 0x2, read_buffer);
+			s5p_hdmi_phy_control(false, 0x1d, 0x4, read_buffer);
+			s5p_hdmi_phy_control(false, 0x1d, 0x5, read_buffer);
+			s5p_hdmi_phy_control(false, 0x1d, 0x6, read_buffer);
+			s5p_hdmi_phy_control(false, 0x4, 0x3, read_buffer);
+#else
 			s5p_hdmi_phy_control(false, 0x1, 0x5, read_buffer);
 			s5p_hdmi_phy_control(false, 0x1, 0x7, read_buffer);
 			s5p_hdmi_phy_control(false, 0x5, 0x5, read_buffer);
 			s5p_hdmi_phy_control(false, 0x17, 0x0, read_buffer);
 			s5p_hdmi_phy_control(false, 0x17, 0x1, read_buffer);
+#endif
 
 			s5p_hdmi_print_phy_config();
 
@@ -2107,14 +2190,17 @@ irq_handled:
 	return IRQ_HANDLED;
 }
 
-void s5p_hdmi_init(void __iomem *hdmi_addr, void __iomem *hdmi_phy_addr)
+void s5p_hdmi_init(void __iomem *hdmi_addr)
 {
 	hdmi_base = hdmi_addr;
-	i2c_hdmi_phy_base = hdmi_phy_addr;
-
 	spin_lock_init(&lock_hdmi);
+}
 
-	writeb(0x5, i2c_hdmi_phy_base + HDMI_I2C_LC);
+void s5p_hdmi_phy_init(void __iomem *hdmi_phy_addr)
+{
+	i2c_hdmi_phy_base = hdmi_phy_addr;
+	if (i2c_hdmi_phy_base != NULL)
+		writeb(0x5, i2c_hdmi_phy_base + HDMI_I2C_LC);
 }
 
 void s5p_hdmi_reg_output(struct s5p_hdmi_o_reg *reg)

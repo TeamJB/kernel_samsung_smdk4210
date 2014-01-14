@@ -21,8 +21,8 @@
 #include <linux/mutex.h>
 #include <linux/suspend.h>
 #include <linux/notifier.h>
+#include <linux/slab.h>
 #include <linux/platform_device.h>
-#include <linux/fb.h>
 #include <linux/devfreq.h>
 #include <linux/devfreq/exynos4_display.h>
 #include <linux/pm_qos_params.h>
@@ -45,24 +45,10 @@ struct exynos4_display_data {
 
 	struct delayed_work wq_lowfreq;
 
-	struct notifier_block nb_fb;
-	struct notifier_block nb_recv;
 	struct notifier_block nb_pm;
 
 	unsigned int state;
-	unsigned int sender_dev_state;
-};
-
-/* Define sender device list which include sending event
- * to exynos-display.
- */
-static LIST_HEAD(sender_dev_list);
-struct sender_dev {
-	struct device *dev;
-	unsigned long freq;
-	int idx;
-
-	struct list_head node;
+	struct mutex lock;
 };
 
 /* Define frequency level */
@@ -114,48 +100,37 @@ static int exynos4_display_send_event_to_display(unsigned long val, void *v)
 }
 
 /*
- * Register exynos-display as client to fb notifer
- * - This callback gets called when something important happens inside a
- * framebuffer driver. We're looking if that important event is blanking.
- */
-static int fb_notifier_callback(struct notifier_block *this,
-				 unsigned long event, void *_data)
-{
-	struct exynos4_display_data *data = container_of(this,
-			struct exynos4_display_data, nb_fb);
-	struct fb_event *evdata = _data;
-	int blank = *(int *)evdata->data;
-
-	switch (blank) {
-	case FB_BLANK_POWERDOWN:
-		/* Cancel workqueue which set low frequency of display client
-		 * if it is pending state before executing workqueue. */
-		if (delayed_work_pending(&data->wq_lowfreq))
-			cancel_delayed_work(&data->wq_lowfreq);
-		return NOTIFY_OK;
-	}
-
-	return NOTIFY_DONE;
-}
-
-/*
  * Register exynos-display as client to pm notifer
  * - This callback gets called when something important happens in pm state.
  */
 static int exynos4_display_pm_notifier_callback(struct notifier_block *this,
 				 unsigned long event, void *_data)
 {
+	struct exynos4_display_data *data = container_of(this,
+			struct exynos4_display_data, nb_pm);
+
+	if (data->state == EXYNOS4_DISPLAY_OFF)
+		return NOTIFY_OK;
+
 	switch (event) {
 	case PM_SUSPEND_PREPARE:
-		/* TODO */
+		mutex_lock(&data->lock);
+		data->state = EXYNOS4_DISPLAY_OFF;
+		mutex_unlock(&data->lock);
+
+		if (delayed_work_pending(&data->wq_lowfreq))
+			cancel_delayed_work(&data->wq_lowfreq);
+
 		return NOTIFY_OK;
 	case PM_POST_RESTORE:
-		/* TODO */
-		return NOTIFY_OK;
 	case PM_POST_SUSPEND:
-		/* TODO */
+		mutex_lock(&data->lock);
+		data->state = EXYNOS4_DISPLAY_ON;
+		mutex_unlock(&data->lock);
+
 		return NOTIFY_OK;
 	}
+
 	return NOTIFY_DONE;
 }
 
@@ -175,8 +150,9 @@ static void exynos4_display_disable(struct exynos4_display_data *data)
 	/* Set high frequency(default) of display client */
 	exynos4_display_send_event_to_display(freq, NULL);
 
+	mutex_lock(&data->lock);
 	data->state = EXYNOS4_DISPLAY_OFF;
-	data->sender_dev_state = 0x0;
+	mutex_unlock(&data->lock);
 
 	/* Find opp object with high frequency */
 	opp = opp_find_freq_floor(data->dev, &freq);
@@ -205,16 +181,20 @@ static void exynos4_display_set_lowfreq(struct work_struct *work)
  * update state of device
  */
 static int exynos4_display_profile_target(struct device *dev,
-					unsigned long *_freq)
+					unsigned long *_freq, u32 options)
 {
 	/* Inform display client of new frequency */
 	struct exynos4_display_data *data = dev_get_drvdata(dev);
-	struct opp *opp = devfreq_recommended_opp(dev, _freq);
+	struct opp *opp = devfreq_recommended_opp(dev, _freq, options &
+						  DEVFREQ_OPTION_FREQ_GLB);
 	unsigned long old_freq = opp_get_freq(data->curr_opp);
 	unsigned long new_freq = opp_get_freq(opp);
 
-	if (data->state == EXYNOS4_DISPLAY_OFF
-			|| old_freq == new_freq)
+	/* TODO: No longer use fb notifier to identify LCD on/off state and
+	   have yet alternative feature of it. So, exynos4-display change
+	   refresh rate of display clinet irrespective of LCD state until
+	   proper feature will be implemented. */
+	if (old_freq == new_freq)
 		return 0;
 
 	opp = opp_find_freq_floor(dev, &new_freq);
@@ -267,7 +247,7 @@ static int exynos4_display_probe(struct platform_device *pdev)
 	}
 	data->dev = dev;
 	data->state = EXYNOS4_DISPLAY_ON;
-	data->sender_dev_state = 0x0;
+	mutex_init(&data->lock);
 
 	/* Register OPP entries */
 	for (i = 0 ; i < _LV_END ; i++) {
@@ -311,22 +291,13 @@ static int exynos4_display_probe(struct platform_device *pdev)
 	}
 	devfreq_register_opp_notifier(dev, data->devfreq);
 
-	/* Register exynos4_display as client to fb notifer */
-	memset(&data->nb_fb, 0, sizeof(data->nb_fb));
-	data->nb_fb.notifier_call = fb_notifier_callback;
-	ret = fb_register_client(&data->nb_fb);
-	if (ret < 0) {
-		dev_err(dev, "failed to get fb notifier: %d\n", ret);
-		goto err_add_devfreq;
-	}
-
 	/* Register exynos4_display as client to pm notifier */
 	memset(&data->nb_pm, 0, sizeof(data->nb_pm));
 	data->nb_pm.notifier_call = exynos4_display_pm_notifier_callback;
 	ret = register_pm_notifier(&data->nb_pm);
 	if (ret < 0) {
 		dev_err(dev, "failed to get pm notifier: %d\n", ret);
-		goto err_nb_fb;
+		goto err_add_devfreq;
 	}
 
 	INIT_DELAYED_WORK(&data->wq_lowfreq, exynos4_display_set_lowfreq);
@@ -335,8 +306,6 @@ static int exynos4_display_probe(struct platform_device *pdev)
 
 	return 0;
 
-err_nb_fb:
-	fb_unregister_client(&data->nb_fb);
 err_add_devfreq:
 	devfreq_remove_device(data->devfreq);
 err_alloc_mem:
@@ -350,26 +319,31 @@ static int __devexit exynos4_display_remove(struct platform_device *pdev)
 	struct exynos4_display_data *data = pdev->dev.platform_data;
 
 	unregister_pm_notifier(&data->nb_pm);
-	fb_unregister_client(&data->nb_fb);
 	exynos4_display_disable(data);
 
 	devfreq_remove_device(data->devfreq);
 
+	kfree(exynos4_display_profile.qos_list);
 	kfree(data);
 
 	return 0;
 }
 
 #ifdef CONFIG_PM
+static int exynos4_display_suspend(struct device *dev)
+{
+	/* TODO */
+	return 0;
+}
+
 static int exynos4_display_resume(struct device *dev)
 {
-	struct exynos4_display_data *data = dev->platform_data;
-
-	exynos4_display_enable(data);
+	/* TODO */
 	return 0;
 }
 
 static const struct dev_pm_ops exynos4_display_dev_pm_ops = {
+	.suspend	= exynos4_display_suspend,
 	.resume		= exynos4_display_resume,
 };
 

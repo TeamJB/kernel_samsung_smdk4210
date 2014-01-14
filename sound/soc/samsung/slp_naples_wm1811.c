@@ -47,6 +47,10 @@
 #define WM1811_JACKDET_MODE_MIC   0x0080
 #define WM1811_JACKDET_MODE_AUDIO 0x0180
 
+#define WM1811_JACKDET_BTN0	0x04
+#define WM1811_JACKDET_BTN1	0x08
+#define WM1811_JACKDET_BTN2	0x10
+
 static const struct wm8958_micd_rate naples_micdet_rates[] = {
 	{ 32768,       true,  1, 4 },
 	{ 32768,       false, 1, 1 },
@@ -229,7 +233,6 @@ static void naples_micdet(u16 status, void *data)
 
 			naples_micd_set_rate(codec);
 
-			jack_event_handler("earjack", 0);
 			snd_soc_jack_report(wm8994->micdet[0].jack, 0,
 					    wm8994->btn_mask |
 					     SND_JACK_HEADSET);
@@ -248,7 +251,6 @@ static void naples_micdet(u16 status, void *data)
 
 		naples_micd_set_rate(codec);
 
-		jack_event_handler("earjack", SND_JACK_HEADSET);
 		snd_soc_jack_report(wm8994->micdet[0].jack, SND_JACK_HEADSET,
 				    SND_JACK_HEADSET);
 	}
@@ -259,7 +261,6 @@ static void naples_micdet(u16 status, void *data)
 
 		naples_micd_set_rate(codec);
 
-		jack_event_handler("earjack", SND_JACK_HEADPHONE);
 		snd_soc_jack_report(wm8994->micdet[0].jack, SND_JACK_HEADPHONE,
 				    SND_JACK_HEADSET);
 
@@ -283,13 +284,13 @@ static void naples_micdet(u16 status, void *data)
 	/* Report short circuit as a button */
 	if (wm8994->jack_mic) {
 		report = 0;
-		if (status & 0x10)
+		if (status & WM1811_JACKDET_BTN0)
 			report |= SND_JACK_BTN_0;
 
-		if (status & 0x80)
+		if (status & WM1811_JACKDET_BTN1)
 			report |= SND_JACK_BTN_1;
 
-		if (status & 0x100)
+		if (status & WM1811_JACKDET_BTN2)
 			report |= SND_JACK_BTN_2;
 
 		dev_dbg(codec->dev, "Detected Button: %08x (%08X)\n",

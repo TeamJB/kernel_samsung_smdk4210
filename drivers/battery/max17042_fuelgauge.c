@@ -213,6 +213,40 @@ static int max17042_get_avgvcell(struct i2c_client *client)
 	return avgvcell;
 }
 
+static int max17042_regs[] = {
+	MAX17042_REG_STATUS,	/* 0x00 */
+	MAX17042_REG_VALRT_TH,	/* 0x01 */
+	MAX17042_REG_TALRT_TH,	/* 0x02 */
+	MAX17042_REG_SALRT_TH,	/* 0x03 */
+	MAX17042_REG_TEMPERATURE,	/* 0x08 */
+	MAX17042_REG_VCELL,	/* 0x09 */
+	MAX17042_REG_AVGVCELL,	/* 0x19 */
+	MAX17042_REG_CONFIG,	/* 0x1D */
+	MAX17042_REG_VERSION,	/* 0x21 */
+	MAX17042_REG_LEARNCFG,	/* 0x28 */
+	MAX17042_REG_FILTERCFG,	/* 0x29 */
+	MAX17042_REG_MISCCFG,	/* 0x2B */
+	MAX17042_REG_CGAIN,	/* 0x2E */
+	MAX17042_REG_RCOMP,	/* 0x38 */
+	MAX17042_REG_VFOCV,	/* 0xFB */
+	MAX17042_REG_SOC_VF,	/* 0xFF */
+	-1, /* end */
+};
+
+static void max17042_read_regs(struct i2c_client *client, char *str)
+{
+	int i;
+	u8 data = 0;
+
+	for (i = 0; ; i++) {
+		if (max17042_regs[i] == -1)
+			break;
+
+		max17042_read_reg(client, max17042_regs[i], &data);
+		sprintf(str+strlen(str), "%04xh, ", data);
+	}
+}
+
 bool sec_hal_fg_init(struct i2c_client *client)
 {
 	/* initialize fuel gauge registers */
@@ -384,7 +418,7 @@ bool sec_hal_fg_get_property(struct i2c_client *client,
 		case SEC_BATTEY_VOLTAGE_AVERAGE:
 			val->intval = max17042_get_avgvcell(client);
 			break;
-		case SEC_BATTEY_VOLTAGE_VFOCV:
+		case SEC_BATTEY_VOLTAGE_OCV:
 			val->intval = max17042_get_vfocv(client);
 			break;
 		}
@@ -418,6 +452,8 @@ bool sec_hal_fg_set_property(struct i2c_client *client,
 			     const union power_supply_propval *val)
 {
 	switch (psp) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		break;
 		/* Battery Temperature */
 	case POWER_SUPPLY_PROP_TEMP:
 		/* Target Temperature */
@@ -428,6 +464,84 @@ bool sec_hal_fg_set_property(struct i2c_client *client,
 		return false;
 	}
 	return true;
+}
+
+ssize_t sec_hal_fg_show_attrs(struct device *dev,
+				const ptrdiff_t offset, char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct sec_fuelgauge_info *fg =
+		container_of(psy, struct sec_fuelgauge_info, psy_fg);
+	int i = 0;
+	char *str = NULL;
+
+	switch (offset) {
+/*	case FG_REG: */
+/*		break; */
+	case FG_DATA:
+		i += scnprintf(buf + i, PAGE_SIZE - i, "%02x%02x\n",
+			fg->reg_data[1], fg->reg_data[0]);
+		break;
+	case FG_REGS:
+		str = kzalloc(sizeof(char)*1024, GFP_KERNEL);
+		if (!str)
+			return -ENOMEM;
+
+		max17042_read_regs(fg->client, str);
+		i += scnprintf(buf + i, PAGE_SIZE - i, "%s\n",
+			str);
+
+		kfree(str);
+		break;
+	default:
+		i = -EINVAL;
+		break;
+	}
+
+	return i;
+}
+
+ssize_t sec_hal_fg_store_attrs(struct device *dev,
+				const ptrdiff_t offset,
+				const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct sec_fuelgauge_info *fg =
+		container_of(psy, struct sec_fuelgauge_info, psy_fg);
+	int ret = 0;
+	int x = 0;
+	u8 data[2];
+
+	switch (offset) {
+	case FG_REG:
+		if (sscanf(buf, "%x\n", &x) == 1) {
+			fg->reg_addr = x;
+			max17042_read_reg(fg->client,
+				fg->reg_addr, fg->reg_data);
+			pr_debug("%s: (read) addr = 0x%x, data = 0x%02x%02x\n",
+				 __func__, fg->reg_addr,
+				 fg->reg_data[1], fg->reg_data[0]);
+		}
+		ret = count;
+		break;
+	case FG_DATA:
+		if (sscanf(buf, "%x\n", &x) == 1) {
+			data[0] = (x & 0xFF00) >> 8;
+			data[1] = (x & 0x00FF);
+			pr_debug("%s: (write) addr = 0x%x, data = 0x%02x%02x\n",
+				__func__, fg->reg_addr,
+				data[1], data[0]);
+			max17042_write_reg(fg->client,
+				fg->reg_addr, data);
+		}
+		ret = count;
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
 }
 #endif
 
@@ -598,6 +712,27 @@ static void fg_periodic_read(struct i2c_client *client)
 			i = 13;
 	}
 	pr_debug("\n");
+}
+
+static void fg_read_regs(struct i2c_client *client, char *str)
+{
+	u8 reg;
+	int i;
+	int data[0x10];
+
+	for (i = 0; i < 16; i++) {
+		for (reg = 0; reg < 0x10; reg++)
+			data[reg] = fg_read_register(client, reg + i * 0x10);
+
+		sprintf(str, "%04xh,%04xh,%04xh,%04xh,%04xh,%04xh,%04xh,%04xh,",
+			data[0x00], data[0x01], data[0x02], data[0x03],
+			data[0x04], data[0x05], data[0x06], data[0x07]);
+		sprintf(str, "%04xh,%04xh,%04xh,%04xh,%04xh,%04xh,%04xh,%04xh,",
+			data[0x08], data[0x09], data[0x0a], data[0x0b],
+			data[0x0c], data[0x0d], data[0x0e], data[0x0f]);
+		if (i == 4)
+			i = 13;
+	}
 }
 
 static int fg_read_vcell(struct i2c_client *client)
@@ -783,7 +918,8 @@ static int fg_read_current(struct i2c_client *client)
 	} else
 		sign = POSITIVE;
 
-	i_current = temp * MAX17042_CURRENT_UNIT;
+	/* 1.5625uV/0.01Ohm(Rsense) = 156.25uA */
+	i_current = temp * 15625 / 100000;
 	if (sign)
 		i_current *= -1;
 
@@ -794,7 +930,8 @@ static int fg_read_current(struct i2c_client *client)
 	} else
 		sign = POSITIVE;
 
-	avg_current = temp * MAX17042_CURRENT_UNIT;
+	/* 1.5625uV/0.01Ohm(Rsense) = 156.25uA */
+	avg_current = temp * 15625 / 100000;
 	if (sign)
 		avg_current *= -1;
 
@@ -828,7 +965,8 @@ static int fg_read_avg_current(struct i2c_client *client)
 	} else
 		sign = POSITIVE;
 
-	avg_current = temp * MAX17042_CURRENT_UNIT;
+	/* 1.5625uV/0.01Ohm(Rsense) = 156.25uA */
+	avg_current = temp * 15625 / 100000;
 
 	if (sign)
 		avg_current *= -1;
@@ -840,8 +978,6 @@ int fg_reset_soc(struct i2c_client *client)
 {
 	struct sec_fuelgauge_info *fuelgauge = i2c_get_clientdata(client);
 	u8 data[2];
-	u32 fullcap;
-	int vfocv = 0;
 
 	/* delay for current stablization */
 	msleep(500);
@@ -1962,14 +2098,14 @@ static int get_fuelgauge_soc(struct i2c_client *client)
 	if (fuelgauge->info.low_batt_boot_flag) {
 		fg_soc = 0;
 
-		if (fuelgauge->pdata->check_cable_status() !=
+		if (fuelgauge->pdata->check_cable_callback() !=
 			POWER_SUPPLY_TYPE_BATTERY &&
 			!check_UV_charging_case(client)) {
 			fg_adjust_capacity(client);
 			fuelgauge->info.low_batt_boot_flag = 0;
 		}
 
-		if (fuelgauge->pdata->check_cable_status() ==
+		if (fuelgauge->pdata->check_cable_callback() ==
 			POWER_SUPPLY_TYPE_BATTERY)
 			fuelgauge->info.low_batt_boot_flag = 0;
 	}
@@ -2087,7 +2223,7 @@ bool sec_hal_fg_init(struct i2c_client *client)
 	fg_read_model_data(client);
 	fg_periodic_read(client);
 
-	if (fuelgauge->pdata->check_cable_status() ==
+	if (fuelgauge->pdata->check_cable_callback() ==
 		POWER_SUPPLY_TYPE_BATTERY &&
 		check_UV_charging_case(client))
 		fuelgauge->info.low_batt_boot_flag = 1;
@@ -2142,6 +2278,14 @@ bool sec_hal_fg_full_charged(struct i2c_client *client)
 	return false;
 }
 
+bool sec_hal_fg_reset(struct i2c_client *client)
+{
+	if (!fg_reset_soc(client))
+		return true;
+	else
+		return false;
+}
+
 bool sec_hal_fg_get_property(struct i2c_client *client,
 			     enum power_supply_property psp,
 			     union power_supply_propval *val)
@@ -2157,7 +2301,7 @@ bool sec_hal_fg_get_property(struct i2c_client *client,
 		case SEC_BATTEY_VOLTAGE_AVERAGE:
 			val->intval = 0;
 			break;
-		case SEC_BATTEY_VOLTAGE_VFOCV:
+		case SEC_BATTEY_VOLTAGE_OCV:
 			val->intval = fg_read_vfocv(client);
 			break;
 		}
@@ -2210,4 +2354,83 @@ bool sec_hal_fg_set_property(struct i2c_client *client,
 	}
 	return true;
 }
+
+ssize_t sec_hal_fg_show_attrs(struct device *dev,
+				const ptrdiff_t offset, char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct sec_fuelgauge_info *fg =
+		container_of(psy, struct sec_fuelgauge_info, psy_fg);
+	int i = 0;
+	char *str = NULL;
+
+	switch (offset) {
+/*	case FG_REG: */
+/*		break; */
+	case FG_DATA:
+		i += scnprintf(buf + i, PAGE_SIZE - i, "%02x%02x\n",
+			fg->reg_data[1], fg->reg_data[0]);
+		break;
+	case FG_REGS:
+		str = kzalloc(sizeof(char)*1024, GFP_KERNEL);
+		if (!str)
+			return -ENOMEM;
+
+		fg_read_regs(fg->client, str);
+		pr_debug("%s: %s\n", __func__, str);
+		i += scnprintf(buf + i, PAGE_SIZE - i, "%s\n",
+			str);
+
+		kfree(str);
+		break;
+	default:
+		i = -EINVAL;
+		break;
+	}
+
+	return i;
+}
+
+ssize_t sec_hal_fg_store_attrs(struct device *dev,
+				const ptrdiff_t offset,
+				const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct sec_fuelgauge_info *fg =
+		container_of(psy, struct sec_fuelgauge_info, psy_fg);
+	int ret = 0;
+	int x = 0;
+	u8 data[2];
+
+	switch (offset) {
+	case FG_REG:
+		if (sscanf(buf, "%x\n", &x) == 1) {
+			fg->reg_addr = x;
+			fg_i2c_read(fg->client,
+				fg->reg_addr, fg->reg_data, 2);
+			pr_debug("%s: (read) addr = 0x%x, data = 0x%02x%02x\n",
+				 __func__, fg->reg_addr,
+				 fg->reg_data[1], fg->reg_data[0]);
+		}
+		ret = count;
+		break;
+	case FG_DATA:
+		if (sscanf(buf, "%x\n", &x) == 1) {
+			data[0] = (x & 0xFF00) >> 8;
+			data[1] = (x & 0x00FF);
+			pr_debug("%s: (write) addr = 0x%x, data = 0x%02x%02x\n",
+				__func__, fg->reg_addr, data[1], data[0]);
+			fg_i2c_write(fg->client,
+				fg->reg_addr, data, 2);
+		}
+		ret = count;
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
+}
 #endif
+

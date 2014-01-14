@@ -1,4 +1,5 @@
-/*
+/* exynos_drm_fb.c
+ *
  * Copyright (c) 2011 Samsung Electronics Co., Ltd.
  * Authors:
  *	Inki Dae <inki.dae@samsung.com>
@@ -30,9 +31,9 @@
 #include "drm_crtc_helper.h"
 #include "drm_fb_helper.h"
 
+#include "exynos_drm.h"
 #include "exynos_drm_drv.h"
 #include "exynos_drm_fb.h"
-#include "exynos_drm_buf.h"
 #include "exynos_drm_gem.h"
 
 #define to_exynos_fb(x)	container_of(x, struct exynos_drm_fb, fb)
@@ -41,13 +42,27 @@
  * exynos specific framebuffer structure.
  *
  * @fb: drm framebuffer obejct.
- * @exynos_gem_objs: array of exynos specific gem object containing a gem
- *	object.
+ * @exynos_gem_obj: array of exynos specific gem object containing a gem object.
  */
 struct exynos_drm_fb {
 	struct drm_framebuffer		fb;
-	struct exynos_drm_gem_obj	*exynos_gem_objs[MAX_FB_BUFFER];
+	struct exynos_drm_gem_obj	*exynos_gem_obj[MAX_FB_BUFFER];
 };
+
+static int check_fb_gem_memory_type(struct exynos_drm_gem_obj *exynos_gem_obj)
+{
+	unsigned int flags;
+
+	flags = exynos_gem_obj->flags;
+
+	/* not support physically non-continuous memory for fb yet. TODO */
+	if (IS_NONCONTIG_BUFFER(flags)) {
+		DRM_ERROR("cannot use this gem memory type for fb.\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
 
 static void exynos_drm_fb_destroy(struct drm_framebuffer *fb)
 {
@@ -70,7 +85,7 @@ static int exynos_drm_fb_create_handle(struct drm_framebuffer *fb,
 	DRM_DEBUG_KMS("%s\n", __FILE__);
 
 	return drm_gem_handle_create(file_priv,
-			&exynos_fb->exynos_gem_objs[0]->base, handle);
+			&exynos_fb->exynos_gem_obj[0]->base, handle);
 }
 
 static int exynos_drm_fb_dirty(struct drm_framebuffer *fb,
@@ -91,39 +106,30 @@ static struct drm_framebuffer_funcs exynos_drm_fb_funcs = {
 	.dirty		= exynos_drm_fb_dirty,
 };
 
-unsigned int exynos_drm_fb_get_buf_num(struct drm_framebuffer *fb)
-{
-	unsigned int buf_num;
-
-	if (!fb)
-		return 0;
-
-	switch (fb->pixel_format) {
-	case DRM_FOURCC_NV12M:
-	case DRM_FOURCC_NV12MT:
-		buf_num = 2;
-		break;
-	default:
-		buf_num = 1;
-		break;
-	}
-
-	return buf_num;
-}
-
 struct drm_framebuffer *
 exynos_drm_framebuffer_init(struct drm_device *dev,
 			    struct drm_mode_fb_cmd2 *mode_cmd,
 			    struct drm_gem_object *obj)
 {
 	struct exynos_drm_fb *exynos_fb;
+	struct exynos_drm_gem_obj *exynos_gem_obj;
 	int ret;
+
+	exynos_gem_obj = to_exynos_gem_obj(obj);
+
+	ret = check_fb_gem_memory_type(exynos_gem_obj);
+	if (ret < 0) {
+		DRM_ERROR("cannot use this gem memory type for fb.\n");
+		return ERR_PTR(-EINVAL);
+	}
 
 	exynos_fb = kzalloc(sizeof(*exynos_fb), GFP_KERNEL);
 	if (!exynos_fb) {
 		DRM_ERROR("failed to allocate exynos drm framebuffer\n");
 		return ERR_PTR(-ENOMEM);
 	}
+
+	exynos_fb->exynos_gem_obj[0] = exynos_gem_obj;
 
 	ret = drm_framebuffer_init(dev, &exynos_fb->fb, &exynos_drm_fb_funcs);
 	if (ret) {
@@ -132,7 +138,6 @@ exynos_drm_framebuffer_init(struct drm_device *dev,
 	}
 
 	drm_helper_mode_fill_fb_struct(&exynos_fb->fb, mode_cmd);
-	exynos_fb->exynos_gem_objs[0] = to_exynos_gem_obj(obj);
 
 	return &exynos_fb->fb;
 }
@@ -144,8 +149,8 @@ exynos_user_fb_create(struct drm_device *dev, struct drm_file *file_priv,
 	struct drm_gem_object *obj;
 	struct drm_framebuffer *fb;
 	struct exynos_drm_fb *exynos_fb;
-	unsigned int buf_num;
 	int nr;
+	int i;
 
 	DRM_DEBUG_KMS("%s\n", __FILE__);
 
@@ -162,11 +167,14 @@ exynos_user_fb_create(struct drm_device *dev, struct drm_file *file_priv,
 		return fb;
 
 	exynos_fb = to_exynos_fb(fb);
-	buf_num = exynos_drm_fb_get_buf_num(fb);
+	nr = exynos_drm_format_num_buffers(fb->pixel_format);
 
-	for (nr = 1; nr < buf_num; nr++) {
+	for (i = 1; i < nr; i++) {
+		struct exynos_drm_gem_obj *exynos_gem_obj;
+		int ret;
+
 		obj = drm_gem_object_lookup(dev, file_priv,
-				mode_cmd->handles[nr]);
+				mode_cmd->handles[i]);
 		if (!obj) {
 			DRM_ERROR("failed to lookup gem object\n");
 			exynos_drm_fb_destroy(fb);
@@ -175,24 +183,33 @@ exynos_user_fb_create(struct drm_device *dev, struct drm_file *file_priv,
 
 		drm_gem_object_unreference_unlocked(obj);
 
-		exynos_fb->exynos_gem_objs[nr] = to_exynos_gem_obj(obj);
+		exynos_gem_obj = to_exynos_gem_obj(obj);
+
+		ret = check_fb_gem_memory_type(exynos_gem_obj);
+		if (ret < 0) {
+			DRM_ERROR("cannot use this gem memory type for fb.\n");
+			exynos_drm_fb_destroy(fb);
+			return ERR_PTR(ret);
+		}
+
+		exynos_fb->exynos_gem_obj[i] = to_exynos_gem_obj(obj);
 	}
 
 	return fb;
 }
 
-struct exynos_drm_gem_buf *exynos_drm_fb_get_buf(struct drm_framebuffer *fb,
-		unsigned int buf_plane)
+struct exynos_drm_gem_buf *exynos_drm_fb_buffer(struct drm_framebuffer *fb,
+						int index)
 {
 	struct exynos_drm_fb *exynos_fb = to_exynos_fb(fb);
 	struct exynos_drm_gem_buf *buffer;
 
 	DRM_DEBUG_KMS("%s\n", __FILE__);
 
-	if (buf_plane >= MAX_FB_BUFFER)
+	if (index >= MAX_FB_BUFFER)
 		return NULL;
 
-	buffer = exynos_fb->exynos_gem_objs[buf_plane]->buffer;
+	buffer = exynos_fb->exynos_gem_obj[index]->buffer;
 	if (!buffer)
 		return NULL;
 
@@ -232,9 +249,3 @@ void exynos_drm_mode_config_init(struct drm_device *dev)
 
 	dev->mode_config.funcs = &exynos_drm_mode_config_funcs;
 }
-
-MODULE_AUTHOR("Inki Dae <inki.dae@samsung.com>");
-MODULE_AUTHOR("Joonyoung Shim <jy0922.shim@samsung.com>");
-MODULE_AUTHOR("Seung-Woo Kim <sw0312.kim@samsung.com>");
-MODULE_DESCRIPTION("Samsung SoC DRM FB Driver");
-MODULE_LICENSE("GPL");

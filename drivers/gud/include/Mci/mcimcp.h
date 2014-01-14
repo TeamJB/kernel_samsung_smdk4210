@@ -48,7 +48,7 @@ typedef enum {
     MC_MCP_RET_ERR_UNWRAP_TRUSTLET_FAILED           = 23, /**< Unwrapping of Trustlet container failed. */
     MC_MCP_RET_ERR_CONTAINER_VERSION_MISMATCH       = 24, /**< Container version mismatch. */
 
-    // used for command verification
+    /* used for command verification */
     MC_MCP_RET_ERR_UNKNOWN_COMMAND                  = 50, /**< The command is unknown. */
     MC_MCP_RET_ERR_INVALID_DATA                     = 51  /**< The command data is invalid. */
 } mcpResult_t;
@@ -131,7 +131,7 @@ typedef struct {
 typedef struct {
     responseHeader_t  rspHeader; /**< Response header. */
 } mcpRspDonateRam_t, *mcpRspDonateRam_ptr;
-/** @} */// End MCPDONATERAM
+/** @} */ /* End MCPDONATERAM */
 
 
 /** @defgroup MCPGETMOBICOREVERSION GET_MOBICORE_VERSION
@@ -150,9 +150,9 @@ typedef struct {
     mcVersionInfo_t  versionInfo; /** MobiCore version info. */
 } mcpRspGetMobiCoreVersion_t, *mcpRspGetMobiCoreVersion_ptr;
 
-/** @} */// End MCPGETMOBICOREVERSION
+/** @} *//* End MCPGETMOBICOREVERSION */
 
-/** @} */// End ASMCMD
+/** @} *//* End ASMCMD */
 
 
 /** @defgroup POWERCMD Power Management Commands
@@ -173,7 +173,7 @@ typedef struct {
 typedef struct {
     responseHeader_t  rspHeader; /**< Response header. */
 } mcpRspSuspend_t, *mcpRspSuspend_ptr;
-/** @} */// End MCPSUSPEND
+/** @} *//* End MCPSUSPEND */
 
 
 /** @defgroup MCPRESUME RESUME
@@ -192,9 +192,9 @@ typedef struct {
     responseHeader_t  rspHeader; /**< Response header. */
 } mcpRspResume_t, *mcpRspResume_ptr;
 
-/** @} */// End MCPRESUME
+/** @} *//* End MCPRESUME */
 
-/** @} */// End POWERCMD
+/** @} *//* End POWERCMD */
 
 
 
@@ -231,7 +231,7 @@ typedef struct {
     uint32_t          sessionId; /**< Session ID used for further communication. */
 } mcpRspOpen_t, *mcpRspOpen_ptr;
 
-/** @} */// End MCPOPEN
+/** @} *//* End MCPOPEN */
 
 
 /** @defgroup MCPCLOSE CLOSE
@@ -256,7 +256,7 @@ typedef struct {
     responseHeader_t  rspHeader; /**< Response header. */
 } mcpRspClose_t, *mcpRspClose_ptr;
 
-/** @} */// End MCPCLOSE
+/** @} *//* End MCPCLOSE */
 
 
 /** @defgroup MCPMAP MAP
@@ -286,7 +286,7 @@ typedef struct {
     uint32_t          secureVirtualAdr; /**< Virtual address in the context of the service the WSM is mapped to, already includes a possible offset! */
 } mcpRspMap_t, *mcpRspMap_ptr;
 
-/** @} *///End MCPMAP
+/** @} *//*End MCPMAP */
 
 
 /** @defgroup MCPUNMAP UNMAP
@@ -312,11 +312,11 @@ typedef struct {
     responseHeader_t rspHeader; /**< Response header. */
 } mcpRspUnmap_t, *mcpRspUnmap_ptr;
 
-/** @} */// End MCPUNMAP
+/** @} *//* End MCPUNMAP */
 
-/** @} */// End SESSCMD
+/** @} *//* End SESSCMD */
 
-/** @} */// End CMD
+/** @} *//* End CMD */
 
 /** Structure of the MCP buffer. */
 typedef union {
@@ -343,14 +343,23 @@ typedef union {
 
 #define MIN_MCP_LEN         sizeof(mcpMessage_t)  /**< Minimum MCP buffer length (in bytes). */
 
+#define MC_FLAG_NO_SLEEP_REQ   0
+#define MC_FLAG_REQ_TO_SLEEP   1
 
+#define MC_STATE_NORMAL_EXECUTION 0
+#define MC_STATE_READY_TO_SLEEP   1
+
+typedef struct {
+	uint16_t SleepReq;
+	uint16_t ReadyToSleep;
+} mcSleepMod_t, *mcSleepMod_ptr;
 
 /** MobiCore status flags */
 typedef struct {
-    uint32_t  schedule; /**< Scheduling hint: if <> MC_FLAG_SCHEDULE_IDLE, MobiCore should be scheduled by the NWd */
-    uint32_t  RFU1;     /**< Reserved for future use: Must not be interpreted */
-    uint32_t  RFU2;     /**< Reserved for future use: Must not be interpreted */
-    uint32_t  RFU3;     /**< Reserved for future use: Must not be interpreted */
+	uint32_t      schedule; /**< Scheduling hint: if <> MC_FLAG_SCHEDULE_IDLE, MobiCore should be scheduled by the NWd */
+	mcSleepMod_t  sleepMode;     /**<  */
+	uint32_t  RFU2;     /**< Reserved for future use: Must not be interpreted */
+	uint32_t  RFU3;     /**< Reserved for future use: Must not be interpreted */
 } mcFlags_t, *mcFlags_ptr;
 
 #define MC_FLAG_SCHEDULE_IDLE      0 /**< MobiCore is idle. No scheduling required. */

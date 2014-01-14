@@ -2736,6 +2736,18 @@ static void sec_touchscreen_close(struct input_dev *dev)
 	struct mxt224_data *data = input_get_drvdata(dev);
 	sec_touchscreen_disable(data);
 }
+/*mode 1 = Charger connected */
+/*mode 0 = Charger disconnected*/
+void mxt_inform_charger_connection(struct mxt224_callbacks *cb, int mode)
+{
+	struct mxt224_data *data = container_of(cb, struct mxt224_data,
+								callbacks);
+
+	pr_info("TSP[%s] %s : charger is %s\n", __FILE__, __func__,
+		mode ? "connected" : "disconnected");
+
+	mxt224_ta_probe(data, mode);
+}
 
 static struct attribute *qt602240_attrs[] = {
 	&dev_attr_object_show.attr,
@@ -2801,8 +2813,8 @@ static int __devinit mxt224_probe(struct i2c_client *client,
 	set_bit(MT_TOOL_FINGER, input_dev->keybit);
 	set_bit(INPUT_PROP_DIRECT, input_dev->propbit);
 
-	input_set_abs_params(input_dev, ABS_X, 0, 539, 0, 0);
-	input_set_abs_params(input_dev, ABS_Y, 0, 959, 0, 0);
+	input_set_abs_params(input_dev, ABS_X, 0, data->pdata->max_x, 0, 0);
+	input_set_abs_params(input_dev, ABS_Y, 0, data->pdata->max_y, 0, 0);
 	input_mt_init_slots(input_dev, data->num_fingers);
 
 	input_set_abs_params(input_dev, ABS_MT_POSITION_X, data->pdata->min_x,
@@ -2826,7 +2838,10 @@ static int __devinit mxt224_probe(struct i2c_client *client,
 	data->pdata->power_on();
 
 	ret = mxt224_init_touch_driver(data);
-	data->pdata->register_cb(mxt224_ta_probe);
+	/*data->pdata->register_cb(mxt224_ta_probe);*/
+	data->callbacks.inform_charger = mxt_inform_charger_connection;
+	if (data->pdata->register_cb)
+		data->pdata->register_cb(&data->callbacks);
 
 	data->boot_or_resume = 1;
 	data->errcondition = ERR_RTN_CONDITION_IDLE;

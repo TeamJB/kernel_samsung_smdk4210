@@ -29,6 +29,7 @@
 #include "mali_kernel_license.h"
 #include "mali_linux_pm.h"
 #include "mali_linux_pm_testsuite.h"
+#include "mali_kernel_pm.h"
 
 #if MALI_LICENSE_IS_GPL
 #if MALI_PMM_RUNTIME_JOB_CONTROL_ON
@@ -138,11 +139,16 @@ _mali_osk_errcode_t _mali_osk_pmm_dev_idle(void)
 #if MALI_LICENSE_IS_GPL
 #ifdef CONFIG_PM_RUNTIME
 #if MALI_PMM_RUNTIME_JOB_CONTROL_ON
+	if (mali_gpu_device.dev.power.disable_depth > 0)
+		return 0;
 
-	err = pm_runtime_put_sync(&(mali_gpu_device.dev));	
-	if(err)
-	{
-		MALI_DEBUG_PRINT(4, ("OSPMM: Error in _mali_osk_pmm_dev_idle\n" ));	
+	err = pm_runtime_put_sync(&(mali_gpu_device.dev));
+	if (err < 0) {
+		if (err == -EAGAIN)
+			return 0;
+		else
+			MALI_DEBUG_PRINT(4, ("OSPMM: Error in"
+						"_mali_osk_pmm_dev_idle\n"));
 	}
 #endif /* MALI_PMM_RUNTIME_JOB_CONTROL_ON */
 #endif /* CONFIG_PM_RUNTIME */
@@ -165,14 +171,24 @@ int _mali_osk_pmm_dev_activate(void)
 		pm_runtime_enable(&(mali_gpu_device.dev));
 		err = pm_runtime_get_sync(&(mali_gpu_device.dev));
 		is_runtime = 1;
-	}
-	else
-	{
+	} else {
+		if (mali_gpu_device.dev.power.disable_depth > 0) {
+			mali_pd_enable();
+			enable_mali_clocks();
+			return 0;
+		}
+
 		err = pm_runtime_get_sync(&(mali_gpu_device.dev));
 	}
-	if(err < 0)
-	{
-		MALI_PRINT(("OSPMM: Error in _mali_osk_pmm_dev_activate, err : %d\n",err ));
+
+	if (err < 0) {
+		if (err == -EAGAIN) {
+			mali_pd_enable();
+			enable_mali_clocks();
+			return 0;
+		} else
+			MALI_PRINT(("OSPMM:Error in _mali_osk_pmm_dev_activate"
+							", err : %d\n", err));
 	}
 #endif /* MALI_PMM_RUNTIME_JOB_CONTROL_ON */
 #endif /* CONFIG_PM_RUNTIME */

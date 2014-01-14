@@ -205,19 +205,18 @@ enum exynos4212_gpio_number {
 
 #include <asm-generic/gpio.h>
 #if defined(CONFIG_MACH_MIDAS) || defined(CONFIG_MACH_SLP_MIDAS) \
-			       || defined(CONFIG_MACH_SLP_PQ) \
-			       || defined(CONFIG_MACH_SLP_PQ_LTE)
+				|| defined(CONFIG_MACH_SLP_PQ) \
+				|| defined(CONFIG_MACH_SLP_PQ_LTE)\
+				|| defined(CONFIG_MACH_SLP_T0_LTE)
 #include "gpio-midas.h"
-#endif
-
-#if defined(CONFIG_MACH_U1_NA_SPR)
-#include "gpio-u1-na-spr.h"
-#elif defined(CONFIG_MACH_U1)
-#include "gpio-u1.h"
 #endif
 
 #if defined(CONFIG_MACH_SLP_NAPLES)
 #include "gpio-naples.h"
+#endif
+
+#if defined(CONFIG_MACH_U1) || defined(CONFIG_MACH_TRATS)
+#include "gpio-u1.h"
 #endif
 
 #if defined(CONFIG_MACH_Q1_BD)

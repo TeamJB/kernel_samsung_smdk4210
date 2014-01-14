@@ -14,6 +14,7 @@
 
 #include <linux/slab.h>
 #include <linux/device.h>
+#include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
@@ -84,7 +85,7 @@ static int adc_jack_probe(struct platform_device *pdev)
 		;
 	if (i == 0 || i > SUPPORTED_CABLE_MAX) {
 		err = -EINVAL;
-		dev_err(&pdev->dev, "error: pdata->cable_names size = %d\n",
+		dev_err(&pdev->dev, "error: pdata->cable_names size = %d, which uses u32 bitmask and cannot exceed 32.\n",
 			i - 1);
 		goto err_alloc;
 	}
@@ -170,18 +171,21 @@ static struct platform_driver adc_jack_driver = {
 	},
 };
 
-static int __init adc_jack_init(void)
-{
-	return platform_driver_register(&adc_jack_driver);
-}
-
-static void __exit adc_jack_exit(void)
-{
-	platform_driver_unregister(&adc_jack_driver);
-}
-
-module_init(adc_jack_init);
-module_exit(adc_jack_exit);
+#define module_platform_driver(__platform_driver) \
+	module_driver(__platform_driver, platform_driver_register, \
+			platform_driver_unregister)
+#define module_driver(__driver, __register, __unregister) \
+static int __init __driver##_init(void) \
+{ \
+	return __register(&(__driver)); \
+} \
+module_init(__driver##_init); \
+static void __exit __driver##_exit(void) \
+{ \
+	__unregister(&(__driver)); \
+} \
+module_exit(__driver##_exit);
+module_platform_driver(adc_jack_driver);
 
 MODULE_AUTHOR("MyungJoo Ham <myungjoo.ham@samsung.com>");
 MODULE_DESCRIPTION("ADC jack extcon driver");

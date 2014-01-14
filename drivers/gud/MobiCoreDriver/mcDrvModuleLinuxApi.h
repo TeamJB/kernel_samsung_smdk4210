@@ -9,6 +9,10 @@
  * Some convenient wrappers for memory functions
  *
  * <!-- Copyright Giesecke & Devrient GmbH 2009-2012 -->
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #ifndef _MC_DRV_MODULE_LINUX_API_H_
@@ -25,7 +29,9 @@
 #include <asm/pgtable.h>
 #include <linux/semaphore.h>
 #include <linux/slab.h>
-
+#include <linux/suspend.h>
+#include <linux/workqueue.h>
+#include <linux/timer.h>
 
 /* make some nice types */
 #if !defined(TRUE)

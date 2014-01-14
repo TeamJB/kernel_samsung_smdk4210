@@ -31,7 +31,7 @@ typedef uint32_t mcContVersion_t;
 
 /** Personalization Data ID. */
 typedef struct {
-    uint8_t data[16];
+    uint32_t data;
 } mcPid_t;
 
 typedef struct {
@@ -135,7 +135,7 @@ typedef struct {
     uint32_t version;
     mcContainerAttribs_t attribs;
     mcSuid_t suid;
-    // Secrets.
+    /* Secrets. */
     mcCoSocCont_t co;
 } mcSocCont_t;
 
@@ -147,7 +147,7 @@ typedef struct {
     mcSuid_t suid;
     mcRootid_t rootid;
     spChild_t children;
-    // Secrets.
+    /* Secrets. */
     mcCoRootCont_t co;
 } mcRootCont_t;
 
@@ -158,7 +158,7 @@ typedef struct {
     mcContainerAttribs_t attribs;
     mcSpid_t spid;
     mcUuidChild_t children;
-    // Secrets.
+    /* Secrets. */
     mcCoSpCont_t co;
 } mcSpCont_t;
 
@@ -169,7 +169,7 @@ typedef struct {
     mcContainerAttribs_t attribs;
     mcSpid_t parent;
     mcUuid_t uuid;
-    // Secrets.
+    /* Secrets. */
     mcCoTltCont_t co;
 } mcTltCont_t;
 
@@ -179,7 +179,7 @@ typedef struct {
     uint32_t version;
     mcUuid_t uuid;
     mcPid_t pid;
-    // Secrets.
+    /* Secrets. */
     mcCoDataCont_t co;
 } mcDataCont_t;
 

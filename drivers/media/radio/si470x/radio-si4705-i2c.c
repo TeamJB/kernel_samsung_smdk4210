@@ -578,6 +578,77 @@ int si4705_gpio_set(struct si4705_device *radio, u8 gpio1,
 
 }
 
+/*
+ * si4705_vol_conv_index_to_value - convert from volume index to real value
+ */
+u16 si4705_vol_conv_index_to_value(struct si4705_device *radio, s32 index)
+{
+	if (index < 0) {
+		pr_warning("%s: out of range %d", __func__, index);
+		return 0;
+	}
+
+	if (!((radio->pdata->pdata_values & SI4705_PDATA_BIT_VOL_STEPS)
+		&& (radio->pdata->pdata_values & SI4705_PDATA_BIT_VOL_TABLE))) {
+		pr_err("%s: it seems si4705_pdata isn't filled", __func__);
+		return RX_VOLUME_MAX;
+	}
+
+	if (index > radio->pdata->rx_vol_steps-1) {
+		pr_warning("%s: out of range %d", __func__, index);
+		return RX_VOLUME_MAX;
+	}
+
+	return radio->pdata->rx_vol_table[index];
+}
+
+/*
+ * si4705_vol_conv_valueto_index
+ *		- convert from real volume value to volume index
+ */
+s32 si4705_vol_conv_value_to_index(struct si4705_device *radio, u16 value)
+{
+	s32 i;
+
+	if (!((radio->pdata->pdata_values & SI4705_PDATA_BIT_VOL_STEPS)
+		&& (radio->pdata->pdata_values & SI4705_PDATA_BIT_VOL_TABLE))) {
+		pr_err("%s: it seems si4705_pdata isn't filled", __func__);
+		return RX_VOLUME_MAX;
+	}
+
+	for (i = 0; i < radio->pdata->rx_vol_steps; i++) {
+		if (value == radio->pdata->rx_vol_table[i])
+			return i;
+	}
+	pr_warning("%s: can not find matching volume %u", __func__, value);
+	return 0;
+}
+
+/*
+ * si4705_get_seek_tune_rssi_threshold_value
+ *		- read FM_SEEK_TUNE_RSSI_THRESHOLD value from pdata
+ */
+u16 si4705_get_seek_tune_rssi_threshold_value(struct si4705_device *radio)
+{
+	if (!(radio->pdata->pdata_values & SI4705_PDATA_BIT_RSSI_THRESHOLD)) {
+		pr_err("%s: it seems si4705_pdata isn't filled", __func__);
+		return FM_SEEK_TUNE_RSSI_THRESHOLD_DEFAULT;
+	} else
+		return radio->pdata->rx_seek_tune_rssi_threshold;
+}
+
+/*
+ * si4705_get_seek_tune_snr_threshold_value
+ *		- read FM_SEEK_TUNE_SNR_THRESHOLD value from pdata
+ */
+u16 si4705_get_seek_tune_snr_threshold_value(struct si4705_device *radio)
+{
+	if (!(radio->pdata->pdata_values & SI4705_PDATA_BIT_SNR_THRESHOLD)) {
+		pr_err("%s: it seems si4705_pdata isn't filled", __func__);
+		return FM_SEEK_TUNE_SNR_THRESHOLD_DEFAULT;
+	} else
+		return radio->pdata->rx_seek_tune_snr_threshold;
+}
 
 /**************************************************************************
  * General Driver Functions - DISCONNECT_CHECK

@@ -99,6 +99,10 @@ static int exynos_irq_eint_set_type(struct irq_data *data, unsigned int type)
 		newvalue = S5P_IRQ_TYPE_LEVEL_HIGH;
 		break;
 
+	case IRQ_TYPE_NONE:
+		printk(KERN_DEBUG "None irq type\n");
+		break;
+
 	default:
 		printk(KERN_ERR "No such irq type %d", type);
 		return -EINVAL;
@@ -144,6 +148,7 @@ static struct irq_chip exynos_irq_eint = {
 	.irq_mask	= exynos_irq_eint_mask,
 	.irq_unmask	= exynos_irq_eint_unmask,
 	.irq_mask_ack	= exynos_irq_eint_maskack,
+	.irq_disable	= exynos_irq_eint_maskack,
 	.irq_ack	= exynos_irq_eint_ack,
 	.irq_set_type	= exynos_irq_eint_set_type,
 #ifdef CONFIG_PM

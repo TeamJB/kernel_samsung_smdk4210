@@ -493,16 +493,19 @@ int s3cfb_extdsp_ioctl(struct fb_info *fb, unsigned int cmd, unsigned long arg)
 	struct fb_fix_screeninfo *fix = &fb->fix;
 	struct s3cfb_extdsp_window *win = fb->par;
 	struct s3cfb_extdsp_lcd *lcd = fbdev->lcd;
+	struct s3cfb_extdsp_time_stamp time_stamp;
 	void *argp = (void *)arg;
 	int ret = 0;
 	dma_addr_t start_addr = 0;
 	dma_addr_t cur_nrbuffer = 0;
 	dma_addr_t next_nrbuffer = 0;
+	int i;
 
 	union {
 		struct s3cfb_extdsp_user_window user_window;
 		int vsync;
 		int lock;
+		struct s3cfb_extdsp_buf_list buf_list;
 	} p;
 
 	switch (cmd) {
@@ -520,13 +523,80 @@ int s3cfb_extdsp_ioctl(struct fb_info *fb, unsigned int cmd, unsigned long arg)
 			win->lock_buf_offset = fix->smem_start +
 				((var->xres_virtual * var->yoffset
 				  + var->xoffset) * (var->bits_per_pixel / 8));
+			for (i = 0; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++) {
+				if (fbdev->buf_list[i].phys_addr ==
+					(unsigned int)win->lock_buf_offset)
+					fbdev->buf_list[i].buf_status =
+						BUF_LOCKED;
+			}
 		} else { /* Unlocked */
+			for (i = 0; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++) {
+				if (fbdev->buf_list[i].phys_addr ==
+					(unsigned int)win->lock_buf_offset)
+					fbdev->buf_list[i].buf_status =
+						BUF_FREE;
+			}
 			win->lock_buf_offset = 0;
+		}
+		break;
+	case S3CFB_EXTDSP_LOCK_AND_GET_BUF:
+		if (copy_from_user(&p.buf_list,
+				   (struct s3cfb_extdsp_buf_list __user *)arg,
+				   sizeof(p.buf_list)))
+			return -EFAULT;
+
+		if (p.buf_list.buf_status == BUF_LOCKED) { /* Locked */
+			memset(&p.buf_list, 0, sizeof(p.buf_list));
+			for (i = 0; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++) {
+				if (fbdev->buf_list[i].buf_status ==
+						BUF_ACTIVE) {
+					fbdev->buf_list[i].buf_status =
+						BUF_LOCKED;
+
+					p.buf_list.phys_addr =
+						fbdev->buf_list[i].phys_addr;
+					p.buf_list.time_marker =
+						fbdev->buf_list[i].time_marker;
+					p.buf_list.buf_status =
+						fbdev->buf_list[i].buf_status;
+					break;
+				}
+			}
+		} else if (p.buf_list.buf_status == BUF_FREE) { /* Unlocked */
+			for (i = 0; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++) {
+				if (fbdev->buf_list[i].phys_addr ==
+						p.buf_list.phys_addr) {
+					fbdev->buf_list[i].buf_status =
+						BUF_FREE;
+					break;
+				}
+			}
+		}
+		if (copy_to_user((void *)arg, &(p.buf_list),
+					sizeof(unsigned int))) {
+			dev_err(fbdev->dev, "copy_to_user error\n");
+			return -EFAULT;
 		}
 		break;
 
 	case S3CFB_EXTDSP_GET_LOCKED_BUFFER:
 		if (copy_to_user((void *)arg, &(win->lock_buf_offset),
+					sizeof(unsigned int))) {
+			dev_err(fbdev->dev, "copy_to_user error\n");
+			return -EFAULT;
+		}
+		break;
+
+	case S3CFB_EXTDSP_GET_FREE_BUFFER:
+		win->free_buf_offset = 0;
+		for (i = 0; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++) {
+			if (fbdev->buf_list[i].buf_status == BUF_FREE) {
+				win->free_buf_offset =
+					fbdev->buf_list[i].phys_addr;
+				break;
+			}
+		}
+		if (copy_to_user((void *)arg, &(win->free_buf_offset),
 					sizeof(unsigned int))) {
 			dev_err(fbdev->dev, "copy_to_user error\n");
 			return -EFAULT;
@@ -595,6 +665,64 @@ int s3cfb_extdsp_ioctl(struct fb_info *fb, unsigned int cmd, unsigned long arg)
 
 		break;
 
+	case S3CFB_EXTDSP_PUT_TIME_STAMP:
+		if (copy_from_user(&time_stamp,
+				   (struct s3cfb_extdsp_time_stamp __user *)arg,
+				   sizeof(time_stamp))) {
+			dev_err(fbdev->dev, "copy_from_user error\n");
+			return -EFAULT;
+		}
+		do_gettimeofday(&time_stamp.time_marker);
+		for(i = 0; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++) {
+			if (fbdev->buf_list[i].phys_addr == time_stamp.phys_addr) {
+				fbdev->buf_list[i].time_marker = time_stamp.time_marker;
+				break;
+			}
+			if (!fbdev->buf_list[i].phys_addr) {
+				fbdev->buf_list[i].phys_addr = time_stamp.phys_addr;
+				fbdev->buf_list[i].time_marker = time_stamp.time_marker;
+				break;
+			}
+			if (i == (CONFIG_FB_S5P_EXTDSP_NR_BUFFERS -1)) {
+				fbdev->buf_list[0].phys_addr = time_stamp.phys_addr;
+				fbdev->buf_list[0].time_marker = time_stamp.time_marker;
+				for(i = 1; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++)
+					fbdev->buf_list[i].phys_addr = 0;
+				break;
+			}
+		}
+		break;
+
+	case S3CFB_EXTDSP_GET_TIME_STAMP:
+		if (copy_from_user(&time_stamp,
+				(struct s3cfb_extdsp_time_stamp __user *)arg,
+				sizeof(time_stamp))) {
+			dev_err(fbdev->dev, "copy_from_user error\n");
+			return -EFAULT;
+		}
+		for(i = 0; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++) {
+			if (fbdev->buf_list[i].phys_addr == time_stamp.phys_addr) {
+				time_stamp.time_marker = fbdev->buf_list[i].time_marker;
+				break;
+			}
+		}
+		if (copy_to_user((void *)arg,
+				   &time_stamp,
+				   sizeof(time_stamp))) {
+			dev_err(fbdev->dev, "copy_to_user error\n");
+			return -EFAULT;
+		}
+		break;
+
+	case S3CFB_EXTDSP_GET_LOCKED_NUMBER:
+		fbdev->lock_cnt = 0;
+		for (i = 0; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++) {
+			if (fbdev->buf_list[i].buf_status == BUF_LOCKED)
+				fbdev->lock_cnt++;
+		}
+		ret = memcpy(argp, &fbdev->lock_cnt, sizeof(fbdev->lock_cnt)) ? 0 : -EFAULT;
+		break;
+
 	case FBIOGET_FSCREENINFO:
 		ret = memcpy(argp, &fb->fix, sizeof(fb->fix)) ? 0 : -EFAULT;
 		break;
@@ -649,6 +777,33 @@ int s3cfb_extdsp_ioctl(struct fb_info *fb, unsigned int cmd, unsigned long arg)
 
 	case S3CFB_EXTDSP_SET_WIN_ADDR:
 		fix->smem_start = (unsigned long)argp;
+		for (i = 0; i < CONFIG_FB_S5P_EXTDSP_NR_BUFFERS; i++) {
+			if (fbdev->buf_list[i].phys_addr ==
+					(unsigned int)fix->smem_start)
+				fbdev->buf_list[i].buf_status = BUF_ACTIVE;
+			else if (fbdev->buf_list[i].buf_status != BUF_LOCKED)
+				fbdev->buf_list[i].buf_status = BUF_FREE;
+		}
+		break;
+
+	case S3CFB_EXTDSP_GET_TZ_MODE:
+		if (copy_to_user((unsigned int *)arg,
+				   &fbdev->enabled_tz,
+				   sizeof(unsigned int))) {
+			dev_err(fbdev->dev,
+				"failed to S3CFB_EXTDSP_GET_TZ_MODE: copy_to_user error\n");
+			return -EFAULT;
+		}
+		break;
+
+	case S3CFB_EXTDSP_SET_TZ_MODE:
+		if (copy_from_user(&fbdev->enabled_tz,
+				   (unsigned int *)arg,
+				   sizeof(unsigned int))) {
+			dev_err(fbdev->dev,
+				"failed to S3CFB_EXTDSP_SET_TZ_MODE: copy_from_user error\n");
+			return -EFAULT;
+		}
 		break;
 
 	default:

@@ -1320,7 +1320,7 @@ static int __init tcrypt_mod_init(void)
 	}
 #else
 	} else
-		//do_integrity_check();
+		do_integrity_check();
 #endif
 	/* We intentionaly return -EAGAIN to prevent keeping the module,
 	 * unless we're running in fips mode. It does all its work from

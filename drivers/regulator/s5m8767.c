@@ -21,6 +21,9 @@
 #include <linux/regulator/machine.h>
 #include <linux/mfd/s5m87xx/s5m-core.h>
 #include <linux/mfd/s5m87xx/s5m-pmic.h>
+#include <linux/sched.h>
+
+#include <mach/sec_debug.h>
 
 struct s5m8767_info {
 	struct device *dev;
@@ -28,7 +31,9 @@ struct s5m8767_info {
 	int num_regulators;
 	struct regulator_dev **rdev;
 	struct s5m_opmode_data *opmode_data;
+	struct delayed_work set_buchg;
 
+	u8 device_id;
 	int ramp_delay;
 	bool buck2_ramp;
 	bool buck3_ramp;
@@ -41,6 +46,8 @@ struct s5m8767_info {
 	u8 buck3_vol[8];
 	u8 buck4_vol[8];
 	int buck_gpios[3];
+	int buck_ds[3];
+
 	int buck_gpioindex;
 };
 
@@ -152,7 +159,7 @@ unsigned int s5m8767_opmode_reg[][3] = {
 	{0x3, 0x2, 0x1}, /* LDO1 */
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
-	{0x0, 0x0, 0x0},
+	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
@@ -166,12 +173,12 @@ unsigned int s5m8767_opmode_reg[][3] = {
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
-	{0x0, 0x0, 0x0},
+	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1}, /* LDO21 */
 	{0x3, 0x2, 0x1},
-	{0x0, 0x0, 0x0},
+	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
@@ -188,9 +195,9 @@ unsigned int s5m8767_opmode_reg[][3] = {
 	{0x3, 0x1, 0x1},
 	{0x3, 0x1, 0x1}, /* BUCK9 */
 	/* 32KHZ */
-	{0x1, 0x1, 0x1},
-	{0x2, 0x2, 0x2},
-	{0x4, 0x4, 0x4},
+	{0x1, 0x0, 0x0},
+	{0x1, 0x0, 0x0},
+	{0x1, 0x0, 0x0},
 };
 
 static int s5m8767_get_register(struct regulator_dev *rdev, int *reg, int *pmic_en)
@@ -220,7 +227,8 @@ static int s5m8767_get_register(struct regulator_dev *rdev, int *reg, int *pmic_
 		break;
 	case S5M8767_AP_EN32KHZ ... S5M8767_BT_EN32KHZ:
 		*reg = S5M8767_REG_CTRL1;
-		break;
+		*pmic_en = 0x01 << (reg_id - S5M8767_AP_EN32KHZ);
+		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -350,13 +358,13 @@ static int s5m8767_get_voltage_register(struct regulator_dev *rdev, int *_reg)
 		reg = S5M8767_REG_BUCK1CTRL2;
 		break;
 	case S5M8767_BUCK2:
-		reg = S5M8767_REG_BUCK2DVS1;
+		reg = S5M8767_REG_BUCK2DVS2;
 		break;
 	case S5M8767_BUCK3:
-		reg = S5M8767_REG_BUCK3DVS1;
+		reg = S5M8767_REG_BUCK3DVS2;
 		break;
 	case S5M8767_BUCK4:
-		reg = S5M8767_REG_BUCK4DVS1;
+		reg = S5M8767_REG_BUCK4DVS2;
 		break;
 	case S5M8767_BUCK5:
 		reg = S5M8767_REG_BUCK5CTRL2;
@@ -373,7 +381,7 @@ static int s5m8767_get_voltage_register(struct regulator_dev *rdev, int *_reg)
 	return 0;
 }
 
-static int s5m8767_get_voltage(struct regulator_dev *rdev)
+static int s5m8767_get_voltage_sel(struct regulator_dev *rdev)
 {
 	struct s5m8767_info *s5m8767 = rdev_get_drvdata(rdev);
 	struct i2c_client *i2c = s5m8767->iodev->i2c;
@@ -390,15 +398,15 @@ static int s5m8767_get_voltage(struct regulator_dev *rdev)
 		mask = 0x3f;
 		break;
 	case S5M8767_BUCK2:
-		if(s5m8767->buck2_gpiodvs)
+		if (s5m8767->buck2_gpiodvs)
 			reg += s5m8767->buck_gpioindex;
 		break;
 	case S5M8767_BUCK3:
-		if(s5m8767->buck3_gpiodvs)
+		if (s5m8767->buck3_gpiodvs)
 			reg += s5m8767->buck_gpioindex;
 		break;
 	case S5M8767_BUCK4:
-		if(s5m8767->buck4_gpiodvs)
+		if (s5m8767->buck4_gpiodvs)
 			reg += s5m8767->buck_gpioindex;
 		break;
 	}
@@ -409,10 +417,7 @@ static int s5m8767_get_voltage(struct regulator_dev *rdev)
 
 	val &= mask;
 
-	if (rdev->desc && rdev->desc->ops && rdev->desc->ops->list_voltage)
-		return rdev->desc->ops->list_voltage(rdev, val);
-
-	return s5m8767_list_voltage(rdev, val);
+	return val;
 }
 
 static inline int s5m8767_convert_voltage(
@@ -476,12 +481,17 @@ static int s5m8767_set_voltage(struct regulator_dev *rdev,
 	s5m_reg_read(i2c, reg, &val);
 	val = val & mask;
 
-	ret = s5m_reg_update(i2c, reg, i, mask);
+	if (s5m8767->device_id == 4 && reg == S5M8767_REG_BUCK1CTRL2)
+		ret = s5m_reg_update(i2c, reg, (i >= 0x40) ? \
+				(0x3F) : (i), mask);
+	else
+		ret = s5m_reg_update(i2c, reg, i, mask);
+
 	*selector = i;
 
 	if (val < i) {
-		udelay(DIV_ROUND_UP(desc->step * (i - val),
-			s5m8767->ramp_delay));
+		udelay(1 + DIV_ROUND_UP(desc->step * (i - val),
+			s5m8767->ramp_delay * 1000));
 	}
 	return ret;
 }
@@ -513,13 +523,27 @@ static int s5m8767_set_voltage_buck(struct regulator_dev *rdev,
 	int new_val, old_val, i = 0;
 	int min_vol = min_uV, max_vol = max_uV;
 
-	if (reg_id < S5M8767_BUCK1 || reg_id > S5M8767_BUCK6)
+	if (reg_id < S5M8767_BUCK1 || reg_id > S5M8767_BUCK9)
 		return -EINVAL;
 
 	switch (reg_id) {
 	case S5M8767_BUCK1:
+		sec_debug_aux_log(SEC_DEBUG_AUXLOG_CPU_BUS_CLOCK_CHANGE,
+			"%s: BUCK1: min_vol=%d, max_vol=%d(%ps)",
+			__func__, min_vol, max_vol,
+			__builtin_return_address(0));
 		return s5m8767_set_voltage(rdev, min_uV, max_uV, selector);
-	case S5M8767_BUCK2 ... S5M8767_BUCK4:
+	case S5M8767_BUCK2:
+		sec_debug_aux_log(SEC_DEBUG_AUXLOG_CPU_BUS_CLOCK_CHANGE,
+			"%s: BUCK2: min_vol=%d, max_vol=%d(%ps)",
+			__func__, min_vol, max_vol,
+			__builtin_return_address(0));
+	case S5M8767_BUCK3:
+		sec_debug_aux_log(SEC_DEBUG_AUXLOG_CPU_BUS_CLOCK_CHANGE,
+			"%s: BUCK3: min_vol=%d, max_vol=%d(%ps)",
+			__func__, min_vol, max_vol,
+			__builtin_return_address(0));
+	case S5M8767_BUCK4:
 		break;
 	case S5M8767_BUCK5 ... S5M8767_BUCK6:
 		return s5m8767_set_voltage(rdev, min_uV, max_uV, selector);
@@ -537,8 +561,7 @@ static int s5m8767_set_voltage_buck(struct regulator_dev *rdev,
 		if (s5m8767->buck2_gpiodvs) {
 			while (s5m8767->buck2_vol[i] != new_val)
 				i++;
-		}
-		else
+		} else
 			return s5m8767_set_voltage(rdev, min_uV, max_uV, selector);
 		break;
 	case S5M8767_BUCK3:
@@ -584,7 +607,7 @@ static struct regulator_ops s5m8767_ldo_ops = {
 	.is_enabled		= s5m8767_reg_is_enabled,
 	.enable			= s5m8767_reg_enable,
 	.disable		= s5m8767_reg_disable,
-	.get_voltage		= s5m8767_get_voltage,
+	.get_voltage_sel	= s5m8767_get_voltage_sel,
 	.set_voltage		= s5m8767_set_voltage,
 	.set_suspend_enable	= s5m8767_reg_enable_suspend,
 	.set_suspend_disable	= s5m8767_reg_disable_suspend,
@@ -595,7 +618,7 @@ static struct regulator_ops s5m8767_buck_ops = {
 	.is_enabled		= s5m8767_reg_is_enabled,
 	.enable			= s5m8767_reg_enable,
 	.disable		= s5m8767_reg_disable,
-	.get_voltage		= s5m8767_get_voltage,
+	.get_voltage_sel	= s5m8767_get_voltage_sel,
 	.set_voltage		= s5m8767_set_voltage_buck,
 	.set_suspend_enable	= s5m8767_reg_enable_suspend,
 	.set_suspend_disable	= s5m8767_reg_disable_suspend,
@@ -683,6 +706,20 @@ static struct regulator_desc regulators[] = {
 	},
 };
 
+static void s5m_set_buchg(struct work_struct *work)
+{
+	struct s5m8767_info *s5m8767;
+	u8 val;
+	val = 0x4f; /* set for BUCHG 100uA */
+
+	s5m8767 = container_of(work, struct s5m8767_info, set_buchg.work);
+
+	s5m_reg_write(s5m8767->iodev->i2c, S5M8767_REG_BUCHG, val);
+
+	s5m_reg_read(s5m8767->iodev->i2c, S5M8767_REG_BUCHG, &val);
+	pr_info("%s set S5M8767_REG_BUCHG = 0x%02x\n", __func__, val);
+}
+
 static __devinit int s5m8767_pmic_probe(struct platform_device *pdev)
 {
 	struct s5m87xx_dev *iodev = dev_get_drvdata(pdev->dev.parent);
@@ -690,8 +727,7 @@ static __devinit int s5m8767_pmic_probe(struct platform_device *pdev)
 	struct regulator_dev **rdev;
 	struct s5m8767_info *s5m8767;
 	struct i2c_client *i2c;
-	int i, ret, size, reg;
-	u8 val;
+	int i, ret, size, buck_init;
 
 	if (!pdata) {
 		dev_err(pdev->dev.parent, "Platform data not supplied\n");
@@ -723,11 +759,47 @@ static __devinit int s5m8767_pmic_probe(struct platform_device *pdev)
 	s5m8767->buck_gpios[0] = pdata->buck_gpios[0];
 	s5m8767->buck_gpios[1] = pdata->buck_gpios[1];
 	s5m8767->buck_gpios[2] = pdata->buck_gpios[2];
+	s5m8767->buck_ds[0] = pdata->buck_ds[0];
+	s5m8767->buck_ds[1] = pdata->buck_ds[1];
+	s5m8767->buck_ds[2] = pdata->buck_ds[2];
+
 	s5m8767->ramp_delay = pdata->buck_ramp_delay;
 	s5m8767->buck2_ramp = pdata->buck2_ramp_enable;
 	s5m8767->buck3_ramp = pdata->buck3_ramp_enable;
 	s5m8767->buck4_ramp = pdata->buck4_ramp_enable;
 	s5m8767->opmode_data = pdata->opmode_data;
+
+	s5m_reg_read(i2c, S5M8767_REG_ID, &s5m8767->device_id);
+	printk(KERN_DEBUG "%s: PMIC DEVICE ID=> 0x%x\n",
+			__func__, s5m8767->device_id);
+
+	buck_init = s5m8767_convert_voltage(&buck_voltage_val1,
+						pdata->buck1_init,
+						pdata->buck1_init +
+						buck_voltage_val1.step);
+
+	s5m_reg_write(i2c, S5M8767_REG_BUCK1DVS2, buck_init);
+
+	buck_init = s5m8767_convert_voltage(&buck_voltage_val2,
+						pdata->buck2_init,
+						pdata->buck2_init +
+						buck_voltage_val2.step);
+
+	s5m_reg_write(i2c, S5M8767_REG_BUCK2DVS2, buck_init);
+
+	buck_init = s5m8767_convert_voltage(&buck_voltage_val2,
+						pdata->buck3_init,
+						pdata->buck3_init +
+						buck_voltage_val2.step);
+
+	s5m_reg_write(i2c, S5M8767_REG_BUCK3DVS2, buck_init);
+
+	buck_init = s5m8767_convert_voltage(&buck_voltage_val2,
+						pdata->buck4_init,
+						pdata->buck4_init +
+						buck_voltage_val2.step);
+
+	s5m_reg_write(i2c, S5M8767_REG_BUCK4DVS2, buck_init);
 
 	for (i = 0; i < 8; i++) {
 		if (s5m8767->buck2_gpiodvs) {
@@ -758,44 +830,61 @@ static __devinit int s5m8767_pmic_probe(struct platform_device *pdev)
 		}
 	}
 
-	if(pdata->buck2_gpiodvs || pdata->buck3_gpiodvs ||
-		pdata->buck4_gpiodvs) {
-		if (gpio_is_valid(pdata->buck_gpios[0]) &&
-			gpio_is_valid(pdata->buck_gpios[1]) &&
-			gpio_is_valid(pdata->buck_gpios[2])) {
-			ret = gpio_request(pdata->buck_gpios[0],
-						"S5M8767 SET1");
-			if (ret == -EBUSY)
-				dev_warn(&pdev->dev, "Duplicated gpio request"
-					" for SET1\n");
+	if (gpio_is_valid(pdata->buck_gpios[0]) &&
+		gpio_is_valid(pdata->buck_gpios[1]) &&
+		gpio_is_valid(pdata->buck_gpios[2])) {
+		ret = gpio_request(pdata->buck_gpios[0], "S5M8767 SET1");
+		if (ret == -EBUSY)
+			dev_warn(&pdev->dev, "Duplicated gpio request"
+				" for SET1\n");
 
-			ret = gpio_request(pdata->buck_gpios[1],
-						"S5M8767 SET2");
-			if (ret == -EBUSY)
-				dev_warn(&pdev->dev, "Duplicated gpio request"
-					" for SET2\n");
+		ret = gpio_request(pdata->buck_gpios[1], "S5M8767 SET2");
+		if (ret == -EBUSY)
+			dev_warn(&pdev->dev, "Duplicated gpio request"
+				" for SET2\n");
 
-			ret = gpio_request(pdata->buck_gpios[2],
-						"S5M8767 SET3");
-			if (ret == -EBUSY)
-				dev_warn(&pdev->dev, "Duplicated gpio request"
-						" for SET3\n");
-			/* SET1 GPIO */
-			gpio_direction_output(pdata->buck_gpios[0],
-					(s5m8767->buck_gpioindex >> 2) & 0x1);
-			/* SET2 GPIO */
-			gpio_direction_output(pdata->buck_gpios[1],
-					(s5m8767->buck_gpioindex >> 1) & 0x1);
-			/* SET3 GPIO */
-			gpio_direction_output(pdata->buck_gpios[2],
-					(s5m8767->buck_gpioindex >> 0) & 0x1);
-			ret = 0;
-		} else {
-			dev_err(&pdev->dev, "GPIO NOT VALID\n");
-			ret = -EINVAL;
-			goto err_alloc;
-		}
+		ret = gpio_request(pdata->buck_gpios[2], "S5M8767 SET3");
+		if (ret == -EBUSY)
+			dev_warn(&pdev->dev, "Duplicated gpio request"
+					" for SET3\n");
+		/* SET1 GPIO */
+		gpio_direction_output(pdata->buck_gpios[0],
+				(s5m8767->buck_gpioindex >> 2) & 0x1);
+		/* SET2 GPIO */
+		gpio_direction_output(pdata->buck_gpios[1],
+				(s5m8767->buck_gpioindex >> 1) & 0x1);
+		/* SET3 GPIO */
+		gpio_direction_output(pdata->buck_gpios[2],
+				(s5m8767->buck_gpioindex >> 0) & 0x1);
+		ret = 0;
+
+
+	} else {
+		dev_err(&pdev->dev, "GPIO NOT VALID\n");
+		ret = -EINVAL;
+		goto err_alloc;
 	}
+
+	ret = gpio_request(pdata->buck_ds[0], "S5M8767 DS2");
+	if (ret == -EBUSY)
+		dev_warn(&pdev->dev, "Duplicated gpio request for DS2\n");
+
+	ret = gpio_request(pdata->buck_ds[1], "S5M8767 DS3");
+	if (ret == -EBUSY)
+		dev_warn(&pdev->dev, "Duplicated gpio request for DS3\n");
+
+	ret = gpio_request(pdata->buck_ds[2], "S5M8767 DS4");
+	if (ret == -EBUSY)
+		dev_warn(&pdev->dev, "Duplicated gpio request for DS4\n");
+
+	/* DS2 GPIO */
+	gpio_direction_output(pdata->buck_ds[0], 0x0);
+	/* DS3 GPIO */
+	gpio_direction_output(pdata->buck_ds[1], 0x0);
+	/* DS4 GPIO */
+	gpio_direction_output(pdata->buck_ds[2], 0x0);
+	/* BUCK1 DVS2 Enable */
+	s5m_reg_update(i2c, S5M8767_REG_BUCK1CTRL1, 0x02, 0x02);
 
 	if (pdata->buck2_gpiodvs) {
 		if (pdata->buck3_gpiodvs || pdata->buck4_gpiodvs) {
@@ -821,13 +910,18 @@ static __devinit int s5m8767_pmic_probe(struct platform_device *pdev)
 		}
 	}
 
-	s5m_reg_update(i2c, S5M8767_REG_BUCK2CTRL, (pdata->buck2_gpiodvs) ?
-			(1 << 1) : (0 << 1), 1 << 1);
-	s5m_reg_update(i2c, S5M8767_REG_BUCK3CTRL, (pdata->buck3_gpiodvs) ?
-			(1 << 1) : (0 << 1), 1 << 1);
-	s5m_reg_update(i2c, S5M8767_REG_BUCK4CTRL, (pdata->buck4_gpiodvs) ?
-			(1 << 1) : (0 << 1), 1 << 1);
-
+	if (pdata->buck2_gpiodvs || pdata->buck3_gpiodvs ||
+	   pdata->buck4_gpiodvs) {
+		s5m_reg_update(i2c, S5M8767_REG_BUCK2CTRL,
+				(pdata->buck2_gpiodvs) ? (1 << 1) : (0 << 1),
+				1 << 1);
+		s5m_reg_update(i2c, S5M8767_REG_BUCK3CTRL,
+				(pdata->buck3_gpiodvs) ? (1 << 1) : (0 << 1),
+				1 << 1);
+		s5m_reg_update(i2c, S5M8767_REG_BUCK4CTRL,
+				(pdata->buck4_gpiodvs) ? (1 << 1) : (0 << 1),
+				1 << 1);
+	}
 	/* Initialize GPIO DVS registers */
 	for (i = 0; i < 8; i++) {
 		if (s5m8767->buck2_gpiodvs) {
@@ -856,25 +950,32 @@ static __devinit int s5m8767_pmic_probe(struct platform_device *pdev)
 		s5m_reg_update(i2c, S5M8767_REG_DVSRAMP, 0x02, 0x02);
 
 	if (s5m8767->buck2_ramp || s5m8767->buck3_ramp
-		|| s5m8767->buck4_ramp) {
-		if (s5m8767->ramp_delay < 10)
+	    || s5m8767->buck4_ramp) {
+		switch (s5m8767->ramp_delay) {
+		case 5:
 			s5m_reg_update(i2c, S5M8767_REG_DVSRAMP,
 					0x40, 0xf0);
-		else if (s5m8767->ramp_delay == 10)
+			break;
+		case 10:
 			s5m_reg_update(i2c, S5M8767_REG_DVSRAMP,
 					0x90, 0xf0);
-		else if (s5m8767->ramp_delay == 25)
+			break;
+		case 25:
 			s5m_reg_update(i2c, S5M8767_REG_DVSRAMP,
 					0xd0, 0xf0);
-		else if (s5m8767->ramp_delay == 50)
+			break;
+		case 50:
 			s5m_reg_update(i2c, S5M8767_REG_DVSRAMP,
 					0xe0, 0xf0);
-		else if (s5m8767->ramp_delay == 100)
+			break;
+		case 100:
 			s5m_reg_update(i2c, S5M8767_REG_DVSRAMP,
 					0xf0, 0xf0);
-		else
+			break;
+		default:
 			s5m_reg_update(i2c, S5M8767_REG_DVSRAMP,
 					0x90, 0xf0);
+		}
 	}
 
 	for (i = 0; i < pdata->num_regulators; i++) {
@@ -896,6 +997,9 @@ static __devinit int s5m8767_pmic_probe(struct platform_device *pdev)
 			goto err;
 		}
 	}
+
+	INIT_DELAYED_WORK_DEFERRABLE(&s5m8767->set_buchg,  s5m_set_buchg);
+	schedule_delayed_work(&s5m8767->set_buchg, msecs_to_jiffies(40000));
 
 	return 0;
 err:

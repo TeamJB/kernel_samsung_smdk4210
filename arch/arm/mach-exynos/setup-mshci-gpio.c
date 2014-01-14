@@ -87,10 +87,18 @@ void exynos4_setup_mshci_cfg_ddr(struct platform_device *dev, int ddr)
 #elif defined(CONFIG_EXYNOS4_MSHC_VPLL_46MHZ)
 		__raw_writel(0x01, DIV_FSYS3);
 #else
+#ifdef CONFIG_EXYNOS4_MSHC_SUPPORT_PQPRIME_EPLL
+		if (soc_is_exynos4412() &&
+				(samsung_rev() >= EXYNOS4412_REV_2_0))
+			/* This is code for support PegasusQ Prime dynamically.
+			 * PegasusQ Prime use EPLL rather than MPLL */
+			__raw_writel(0x00, DIV_FSYS3);
+		else
+#endif /* ifdef CONFIG_EXYNOS4_MSHC_SUPPORT_PQPRIME_EPLL */
 		if ((soc_is_exynos4412() || soc_is_exynos4212()) &&
-			samsung_rev() >= EXYNOS4412_REV_1_0) {
+				samsung_rev() >= EXYNOS4412_REV_1_0)
 			__raw_writel(0x1, DIV_FSYS3);
-		} else
+		else
 			__raw_writel(0x05, DIV_FSYS3);
 #endif
 	} else {
@@ -99,8 +107,16 @@ void exynos4_setup_mshci_cfg_ddr(struct platform_device *dev, int ddr)
 #elif defined(CONFIG_EXYNOS4_MSHC_VPLL_46MHZ)
 		__raw_writel(0x03, DIV_FSYS3);
 #else
+#ifdef CONFIG_EXYNOS4_MSHC_SUPPORT_PQPRIME_EPLL
+		if (soc_is_exynos4412() &&
+				(samsung_rev() >= EXYNOS4412_REV_2_0))
+			/* This is code for support PegasusQ Prime dynamically.
+			 * PegasusQ Prime use EPLL rather than MPLL */
+			__raw_writel(0x01, DIV_FSYS3);
+		else
+#endif /* ifdef CONFIG_EXYNOS4_MSHC_SUPPORT_PQPRIME_EPLL */
 		if ((soc_is_exynos4412() || soc_is_exynos4212()) &&
-			samsung_rev() >= EXYNOS4412_REV_1_0)
+				samsung_rev() >= EXYNOS4412_REV_1_0)
 			__raw_writel(0x3, DIV_FSYS3);
 		else
 			__raw_writel(0xb, DIV_FSYS3);
@@ -140,6 +156,11 @@ void exynos4_setup_mshci_set_power(struct platform_device *dev, int en)
 
 	if (pdata->int_power_gpio) {
 		if (en) {
+#if defined(CONFIG_MACH_Q1_BD)
+			mdelay(20);
+#elif defined(CONFIG_MACH_PX)
+			mdelay(10);
+#endif
 			/*CMD/CLK*/
 			for (gpio = EXYNOS4_GPK0(0); gpio < EXYNOS4_GPK0(2);
 					gpio++) {
@@ -163,6 +184,11 @@ void exynos4_setup_mshci_set_power(struct platform_device *dev, int en)
 			pr_info("%s : internal MMC Card ON samsung-mshc.\n",
 					__func__);
 		} else {
+#if defined(CONFIG_MACH_M0_CTC)
+			s3c_gpio_cfgpin(pdata->int_power_gpio, S3C_GPIO_OUTPUT);
+			s3c_gpio_setpull(pdata->int_power_gpio,
+					S3C_GPIO_PULL_NONE);
+#endif
 			gpio_set_value(pdata->int_power_gpio, 0);
 
 			/*CMD/CLK*/

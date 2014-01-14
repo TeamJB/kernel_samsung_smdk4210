@@ -29,13 +29,13 @@
 
 /* wimax mode */
 enum {
-        SDIO_MODE = 0,
-        WTM_MODE,
-        MAC_IMEI_WRITE_MODE,
-        USIM_RELAY_MODE,
-        DM_MODE,
-        USB_MODE,
-        AUTH_MODE
+	SDIO_MODE = 0,
+	WTM_MODE,
+	MAC_IMEI_WRITE_MODE,
+	USIM_RELAY_MODE,
+	DM_MODE,
+	USB_MODE,
+	AUTH_MODE
 };
 
 /* wimax power state */
@@ -48,17 +48,17 @@ enum {
 
 /* wimax state */
 enum {
-        WIMAX_STATE_NOT_READY,
-        WIMAX_STATE_READY,
-        WIMAX_STATE_VIRTUAL_IDLE,
-        WIMAX_STATE_NORMAL,
-        WIMAX_STATE_IDLE,
-  WIMAX_STATE_RESET_REQUESTED,
-        WIMAX_STATE_RESET_ACKED,
-        WIMAX_STATE_AWAKE_REQUESTED,
+	WIMAX_STATE_NOT_READY,
+	WIMAX_STATE_READY,
+	WIMAX_STATE_VIRTUAL_IDLE,
+	WIMAX_STATE_NORMAL,
+	WIMAX_STATE_IDLE,
+	WIMAX_STATE_RESET_REQUESTED,
+	WIMAX_STATE_RESET_ACKED,
+	WIMAX_STATE_AWAKE_REQUESTED,
 };
 
-struct wimax_cfg{
+struct wimax_cfg {
 	struct wake_lock	wimax_driver_lock;	/* resume wake lock */
 	struct mutex power_mutex; /*serialize power on/off*/
 	struct mutex suspend_mutex;
@@ -66,25 +66,28 @@ struct wimax_cfg{
 	struct wimax732_platform_data *pdata;
 	struct notifier_block pm_notifier;
 	u8		power_state;
-        u8              wimax_mode;/* wimax mode (SDIO, USB, etc..) */
+	/* wimax mode (SDIO, USB, etc..) */
+	u8              wimax_mode;
 };
 
 struct wimax732_platform_data {
-        int (*power) (int);
+	int (*power) (int);
 	void (*detect) (int);
-        void (*set_mode) (void);
-        void (*signal_ap_active) (int);
-        int (*get_sleep_mode) (void);
-        int (*is_modem_awake) (void);
-        void (*wakeup_assert) (int);
-        struct wimax_cfg *g_cfg;
-        struct miscdevice swmxctl_dev;
-        int wimax_int;
+	void (*set_mode) (void);
+	void (*signal_ap_active) (int);
+	int (*get_sleep_mode) (void);
+	int (*is_modem_awake) (void);
+	void (*wakeup_assert) (int);
+	struct wimax_cfg *g_cfg;
+	struct miscdevice swmxctl_dev;
+	int wimax_int;
 	void *adapter_data;
 	void (*restore_uart_path) (void);
 	int uart_sel;
 	int uart_sel1;
 };
+
+void s3c_bat_use_wimax(int onoff);
 
 #endif
 

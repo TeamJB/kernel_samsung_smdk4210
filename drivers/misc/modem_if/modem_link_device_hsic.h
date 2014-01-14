@@ -13,7 +13,6 @@
  *
  */
 
-
 #ifndef __MODEM_LINK_DEVICE_USB_H__
 #define __MODEM_LINK_DEVICE_USB_H__
 
@@ -37,6 +36,7 @@ enum {
 #define IOCTL_LINK_GET_HOSTWAKE		_IO('o', 0x32)
 #define IOCTL_LINK_CONNECTED		_IO('o', 0x33)
 #define IOCTL_LINK_SET_BIAS_CLEAR	_IO('o', 0x34)
+#define IOCTL_LINK_GET_PHONEACTIVE	_IO('o', 0x35)
 
 /* VID,PID for IMC - XMM6260, XMM6262*/
 #define IMC_BOOT_VID		0x058b
@@ -98,6 +98,13 @@ struct link_pm_data {
 	struct wake_lock tx_async_wake;
 	struct notifier_block pm_notifier;
 	bool dpm_suspending;
+
+	/* Host wakeup toggle debugging */
+	unsigned ipc_debug_cnt;
+	unsigned long tx_cnt;
+	unsigned long rx_cnt;
+
+	void (*ehci_reg_dump)(struct device *);
 };
 
 struct if_usb_devdata {
@@ -130,6 +137,11 @@ struct usb_link_device {
 
 	/* LINK PM DEVICE DATA */
 	struct link_pm_data *link_pm_data;
+
+	/*RX retry work by -ENOMEM*/
+	struct delayed_work rx_retry_work;
+	struct urb *retry_urb;
+	unsigned rx_retry_cnt;
 };
 /* converts from struct link_device* to struct xxx_link_device* */
 #define to_usb_link_device(linkdev) \

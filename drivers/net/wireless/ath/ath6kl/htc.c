@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2007-2011 Atheros Communications Inc.
+ * Copyright (c) 2011-2012 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -21,6 +22,9 @@
 #include <asm/unaligned.h>
 
 #define CALC_TXRX_PADDED_LEN(dev, len)  (__ALIGN_MASK((len), (dev)->block_mask))
+
+/* threshold to re-enable Tx bundling for an AC*/
+#define TX_RESUME_BUNDLE_THRESHOLD	1500
 
 /* Functions for Tx credit handling */
 static void ath6kl_credit_deposit(struct ath6kl_htc_credit_info *cred_info,
@@ -71,10 +75,7 @@ static void ath6kl_credit_init(struct ath6kl_htc_credit_info *cred_info,
 			 * never goes inactive EVER.
 			 */
 			cur_ep_dist->dist_flags |= HTC_EP_ACTIVE;
-		} else if (cur_ep_dist->svc_id == WMI_DATA_BK_SVC)
-			/* this is the lowest priority data endpoint */
-			/* FIXME: this looks fishy, check */
-			cred_info->lowestpri_ep_dist = cur_ep_dist->list;
+		}
 
 		/*
 		 * Streams have to be created (explicit | implicit) for all
@@ -87,6 +88,13 @@ static void ath6kl_credit_init(struct ath6kl_htc_credit_info *cred_info,
 		 * as traffic activity demands
 		 */
 	}
+
+	/*
+	 * For ath6kl_credit_seek function,
+	 * it use list_for_each_entry_reverse to walk around the whole ep list.
+	 * Therefore assign this lowestpri_ep_dist after walk around the ep_list
+	 */
+	cred_info->lowestpri_ep_dist = cur_ep_dist->list;
 
 	WARN_ON(cred_info->cur_free_credits <= 0);
 
@@ -744,6 +752,12 @@ static void ath6kl_htc_tx_bundle(struct htc_endpoint *endpoint,
 	struct hif_scatter_req *scat_req = NULL;
 	int n_scat, n_sent_bundle = 0, tot_pkts_bundle = 0;
 	int status;
+	u32 txb_mask;
+	u8 ac = WMM_NUM_AC;
+
+	if ((HTC_CTRL_RSVD_SVC != endpoint->svc_id) ||
+		(WMI_CONTROL_SVC != endpoint->svc_id))
+		ac = target->dev->ar->ep2ac_map[endpoint->eid];
 
 	while (true) {
 		status = 0;
@@ -761,6 +775,31 @@ static void ath6kl_htc_tx_bundle(struct htc_endpoint *endpoint,
 			ath6kl_dbg(ATH6KL_DBG_HTC,
 				"htc tx no more scatter resources\n");
 			break;
+		}
+
+		if ((ac < WMM_NUM_AC) && (ac != WMM_AC_BK)) {
+			if (WMM_AC_BE == ac)
+				/*
+				 * BE, BK have priorities and bit
+				 * positions reversed
+				 */
+				txb_mask = (1 << WMM_AC_BK);
+			else
+				/*
+				 * any AC with priority lower than
+				 * itself
+				 */
+				txb_mask = ((1 << ac) - 1);
+		/*
+		 * when the scatter request resources drop below a
+		 * certain threshold, disable Tx bundling for all
+		 * AC's with priority lower than the current requesting
+		 * AC. Otherwise re-enable Tx bundling for them
+		 */
+		if (scat_req->scat_q_depth < ATH6KL_SCATTER_REQS)
+			target->tx_bndl_mask &= ~txb_mask;
+		else
+			target->tx_bndl_mask |= txb_mask;
 		}
 
 		ath6kl_dbg(ATH6KL_DBG_HTC, "htc tx pkts to scatter: %d\n",
@@ -806,6 +845,7 @@ static void ath6kl_htc_tx_from_queue(struct htc_target *target,
 	struct htc_packet *packet;
 	int bundle_sent;
 	int n_pkts_bundle;
+	u8 ac = WMM_NUM_AC;
 
 	spin_lock_bh(&target->tx_lock);
 
@@ -822,6 +862,10 @@ static void ath6kl_htc_tx_from_queue(struct htc_target *target,
 	 * as we have enough credits.
 	 */
 	INIT_LIST_HEAD(&txq);
+
+	if ((HTC_CTRL_RSVD_SVC != endpoint->svc_id) ||
+		(WMI_CONTROL_SVC != endpoint->svc_id))
+		ac = target->dev->ar->ep2ac_map[endpoint->eid];
 
 	while (true) {
 
@@ -840,15 +884,18 @@ static void ath6kl_htc_tx_from_queue(struct htc_target *target,
 
 		while (true) {
 			/* try to send a bundle on each pass */
-			if ((target->tx_bndl_enable) &&
+			if ((target->tx_bndl_mask) &&
 			    (get_queue_depth(&txq) >=
 			    HTC_MIN_HTC_MSGS_TO_BUNDLE)) {
 				int temp1 = 0, temp2 = 0;
 
-				ath6kl_htc_tx_bundle(endpoint, &txq,
-						     &temp1, &temp2);
-				bundle_sent += temp1;
-				n_pkts_bundle += temp2;
+				/* check if bundling is enabled for an AC */
+				if (target->tx_bndl_mask & (1 << ac)) {
+					ath6kl_htc_tx_bundle(endpoint, &txq,
+							     &temp1, &temp2);
+					bundle_sent += temp1;
+					n_pkts_bundle += temp2;
+				}
 			}
 
 			if (list_empty(&txq))
@@ -867,6 +914,26 @@ static void ath6kl_htc_tx_from_queue(struct htc_target *target,
 
 		endpoint->ep_st.tx_bundles += bundle_sent;
 		endpoint->ep_st.tx_pkt_bundled += n_pkts_bundle;
+
+		/*
+		 * if an AC has bundling disabled and no tx bundling
+		 * has occured continously for a certain number of TX,
+		 * enable tx bundling for this AC
+		 */
+		if (!bundle_sent) {
+			if (!(target->tx_bndl_mask & (1 << ac)) &&
+				(ac < WMM_NUM_AC)) {
+				if (++target->ac_tx_count[ac] >=
+					TX_RESUME_BUNDLE_THRESHOLD) {
+					target->ac_tx_count[ac] = 0;
+					target->tx_bndl_mask |= (1 << ac);
+				}
+			}
+		} else {
+			/* tx bundling will reset the counter */
+			if (ac < WMM_NUM_AC)
+				target->ac_tx_count[ac] = 0;
+		}
 	}
 
 	endpoint->tx_proc_cnt = 0;
@@ -2311,7 +2378,21 @@ void ath6kl_htc_flush_rx_buf(struct htc_target *target)
 				   "htc rx flush pkt 0x%p  len %d  ep %d\n",
 				   packet, packet->buf_len,
 				   packet->endpoint);
-			dev_kfree_skb(packet->pkt_cntxt);
+			/*
+			 * packets in rx_bufq of endpoint 0 have originally
+			 * been queued from target->free_ctrl_rxbuf where
+			 * packet and packet->buf_start are allocated
+			 * separately using kmalloc(). For other endpoint
+			 * rx_bufq, it is allocated as skb where packet is
+			 * skb->head. Take care of this difference while freeing
+			 * the memory.
+			 */
+			if (packet->endpoint == ENDPOINT_0) {
+				kfree(packet->buf_start);
+				kfree(packet);
+			} else {
+				dev_kfree_skb(packet->pkt_cntxt);
+			}
 			spin_lock_bh(&target->rx_lock);
 		}
 		spin_unlock_bh(&target->rx_lock);
@@ -2393,7 +2474,8 @@ int ath6kl_htc_conn_service(struct htc_target *target,
 		max_msg_sz = le16_to_cpu(resp_msg->max_msg_sz);
 	}
 
-	if (assigned_ep >= ENDPOINT_MAX || !max_msg_sz) {
+	if (WARN_ON_ONCE(assigned_ep == ENDPOINT_UNUSED ||
+			 assigned_ep >= ENDPOINT_MAX || !max_msg_sz)) {
 		status = -ENOMEM;
 		goto fail_tx;
 	}
@@ -2421,6 +2503,18 @@ int ath6kl_htc_conn_service(struct htc_target *target,
 	endpoint->cred_dist.htc_ep = endpoint;
 	endpoint->cred_dist.endpoint = assigned_ep;
 	endpoint->cred_dist.cred_sz = target->tgt_cred_sz;
+
+	switch (endpoint->svc_id) {
+	case WMI_DATA_BK_SVC:
+		endpoint->tx_drop_packet_threshold = MAX_DEF_COOKIE_NUM / 3;
+		break;
+	case WMI_DATA_VO_SVC:
+		endpoint->tx_drop_packet_threshold = DATA_SYNC_RESERVED;
+		break;
+	default:
+		endpoint->tx_drop_packet_threshold = MAX_HI_COOKIE_NUM;
+		break;
+	}
 
 	if (conn_req->max_rxmsg_sz) {
 		/*
@@ -2519,7 +2613,8 @@ static void htc_setup_msg_bndl(struct htc_target *target)
 		   target->max_rx_bndl_sz, target->max_tx_bndl_sz);
 
 	if (target->max_tx_bndl_sz)
-		target->tx_bndl_enable = true;
+		/* tx_bndl_mask is enabled per AC, each has 1 bit */
+		target->tx_bndl_mask = (1 << WMM_NUM_AC) - 1;
 
 	if (target->max_rx_bndl_sz)
 		target->rx_bndl_enable = true;
@@ -2534,7 +2629,7 @@ static void htc_setup_msg_bndl(struct htc_target *target)
 		 * padding will spill into the next credit buffer
 		 * which is fatal.
 		 */
-		target->tx_bndl_enable = false;
+		target->tx_bndl_mask = 0;
 	}
 }
 

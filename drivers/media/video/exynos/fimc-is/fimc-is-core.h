@@ -33,7 +33,7 @@
 #include <linux/spinlock.h>
 
 #include <linux/videodev2.h>
-#include <linux/videodev2_samsung.h>
+#include <linux/videodev2_exynos_camera.h>
 #include <media/v4l2-subdev.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-mem2mem.h>
@@ -62,21 +62,38 @@
 
 #define FIMC_IS_A5_MEM_SIZE		0x00A00000
 #define FIMC_IS_REGION_SIZE		0x5000
-#define ISP_SETFILE_SIZE		0xc0d8
-#define DRC_SETFILE_SIZE		0x140
-#define FD_SETFILE_SIZE			(0x88*2)
-#define FIMC_IS_DEBUG_REGION_ADDR	0x00840000
+
+#define FIMC_IS_DEBUG_REGION_ADDR	0x0084B000
 #define FIMC_IS_SHARED_REGION_ADDR	0x008C0000
+#define FIMC_IS_FW_INFO_LENGTH		32
+#define FIMC_IS_FW_VERSION_LENGTH	7
+#define FIMC_IS_SETFILE_INFO_LENGTH	39
+
+#define FIMC_IS_EXTRA_MEM_SIZE	(FIMC_IS_EXTRA_FW_SIZE +	\
+				 FIMC_IS_EXTRA_SETFILE_SIZE +	\
+				 0x1000)
+#define FIMC_IS_EXTRA_FW_SIZE		0x180000
+#define FIMC_IS_EXTRA_SETFILE_SIZE	0x4B000
 
 #define GED_FD_RANGE			1000
 
-#define BUS_LOCK_FREQ_L0	400200
-#define BUS_LOCK_FREQ_L1	267200
-#define BUS_LOCK_FREQ_L2	267160
-#define BUS_LOCK_FREQ_L3	160160
-#define BUS_LOCK_FREQ_L4	133133
-#define BUS_LOCK_FREQ_L5	100100
-
+#ifdef CONFIG_MACH_T0
+#define BUS_LOCK_FREQ_L0	440293
+#define BUS_LOCK_FREQ_L1	440220
+#define BUS_LOCK_FREQ_L2	293220
+#define BUS_LOCK_FREQ_L3	293176
+#define BUS_LOCK_FREQ_L4	176176
+#define BUS_LOCK_FREQ_L5	147147
+#define BUS_LOCK_FREQ_L6	110110
+#else
+#define BUS_LOCK_FREQ_L0	400266
+#define BUS_LOCK_FREQ_L1	400200
+#define BUS_LOCK_FREQ_L2	267200
+#define BUS_LOCK_FREQ_L3	267160
+#define BUS_LOCK_FREQ_L4	160160
+#define BUS_LOCK_FREQ_L5	133133
+#define BUS_LOCK_FREQ_L6	100100
+#endif
 /* A5 debug message setting */
 #define FIMC_IS_DEBUG_MSG	0x3F
 #define FIMC_IS_DEBUG_LEVEL	3
@@ -116,11 +133,11 @@ Default setting values
 #define DEFAULT_CAPTURE_VIDEO_WIDTH	640
 #define DEFAULT_CAPTURE_VIDEO_HEIGHT	480
 
-
 #define DEFAULT_PREVIEW_STILL_FRAMERATE	30
 #define DEFAULT_CAPTURE_STILL_FRAMERATE	15
 #define DEFAULT_PREVIEW_VIDEO_FRAMERATE	30
 #define DEFAULT_CAPTURE_VIDEO_FRAMERATE	30
+
 enum fimc_is_state_flag {
 	IS_ST_IDLE,
 	IS_ST_FW_LOADED,
@@ -157,6 +174,8 @@ enum sensor_list {
 	SENSOR_S5K6A3_CSI_B	= 102,
 	SENSOR_S5K4E5_CSI_B	= 103,
 	SENSOR_S5K3H7_CSI_B	= 104,
+	/* Custom mode */
+	SENSOR_S5K6A3_CSI_B_CUSTOM	= 200,
 };
 
 enum sensor_name {
@@ -220,23 +239,26 @@ struct is_meminfo {
 	size_t		dvaddr;
 	unsigned char	*kvaddr;
 	struct vb2_buffer	vb2_buf;
+	dma_addr_t	fw_ref_base;
+	dma_addr_t	setfile_ref_base;
 };
 
 struct is_fw {
 	const struct firmware	*info;
 	int			state;
 	int			ver;
-	char			fw_info[25];
-	char			setfile_info[32];
-	char			fw_version[6];
+	char			fw_info[FIMC_IS_FW_INFO_LENGTH];
+	char			setfile_info[FIMC_IS_SETFILE_INFO_LENGTH];
+	char			fw_version[FIMC_IS_FW_VERSION_LENGTH];
+	size_t			size;
 };
 
 struct is_setfile {
 	const struct firmware	*info;
 	int			state;
-	int			ver;
+	u32			sub_index;
 	u32			base;
-	u32			size;
+	size_t			size;
 };
 
 struct is_to_host_cmd {
@@ -266,6 +288,11 @@ struct is_sensor {
 	u32 offset_y;
 	u32 zoom_out_width;
 	u32 zoom_out_height;
+	u32 frametime_max_prev;
+	u32 frametime_max_prev_cam;
+	u32 frametime_max_cap;
+	u32 frametime_max_cam;
+	int framerate_update;
 };
 
 struct is_fd_result_header {
@@ -285,6 +312,8 @@ struct is_af_info {
 	u32 awb_lock_state;
 	u16 pos_x;
 	u16 pos_y;
+	u16 prev_pos_x;
+	u16 prev_pos_y;
 	u16 use_af;
 };
 
@@ -297,7 +326,7 @@ struct fimc_is_vb2 {
 
 	unsigned long (*plane_addr)(struct vb2_buffer *vb, u32 plane_no);
 
-	void (*resume)(void *alloc_ctx);
+	int (*resume)(void *alloc_ctx);
 	void (*suspend)(void *alloc_ctx);
 
 	int (*cache_flush)(struct vb2_buffer *vb, u32 num_planes);
@@ -363,18 +392,13 @@ struct fimc_is_dev {
 	unsigned long			vb_state;
 #endif
 	struct device			*bus_dev;
+	int				low_power_mode;
 	/* Shared parameter region */
 	atomic_t			p_region_num;
 	unsigned long			p_region_index1;
 	unsigned long			p_region_index2;
 	struct is_region		*is_p_region;
 	struct is_share_region		*is_shared_region;
-};
-
-struct fimc_is_ctx {
-	spinlock_t			slock;
-	u32				state;
-	struct fimc_is_dev		*is_dev;
 };
 
 static inline void fimc_is_state_lock_set(u32 state, struct fimc_is_dev *dev)
@@ -416,6 +440,7 @@ extern void fimc_is_hw_a5_power(struct fimc_is_dev *dev, int on);
 extern int fimc_is_hw_io_init(struct fimc_is_dev *dev);
 extern void fimc_is_hw_open_sensor(struct fimc_is_dev *dev,
 					u32 id, u32 sensor_index);
+extern void fimc_is_hw_close_sensor(struct fimc_is_dev *dev, u32 id);
 extern void fimc_is_hw_set_stream(struct fimc_is_dev *dev, int on);
 extern void fimc_is_hw_set_init(struct fimc_is_dev *dev);
 extern void fimc_is_hw_change_mode(struct fimc_is_dev *dev, int val);
@@ -425,6 +450,12 @@ extern int fimc_is_hw_get_sensor_max_framerate(struct fimc_is_dev *dev);
 extern void fimc_is_hw_set_debug_level(struct fimc_is_dev *dev, int level1,
 								int level2);
 extern int fimc_is_hw_set_tune(struct fimc_is_dev *dev);
+extern int fimc_is_hw_get_sensor_size_width(struct fimc_is_dev *dev);
+extern int fimc_is_hw_get_sensor_size_height(struct fimc_is_dev *dev);
+extern int fimc_is_hw_get_sensor_format(struct fimc_is_dev *dev);
+extern void fimc_is_hw_set_low_poweroff(struct fimc_is_dev *dev, int on);
+
+extern int fimc_is_af_face(struct fimc_is_dev *dev);
 
 extern int fimc_is_s_power(struct v4l2_subdev *sd, int on);
 

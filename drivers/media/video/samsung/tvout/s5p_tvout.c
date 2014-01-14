@@ -13,6 +13,7 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/mm.h>
+#include <linux/delay.h>
 
 #if defined(CONFIG_S5P_SYSMMU_TV)
 #include <plat/sysmmu.h>
@@ -23,6 +24,10 @@
 #elif defined(CONFIG_S5P_MEM_BOOTMEM)
 #include <plat/media.h>
 #include <mach/media.h>
+#endif
+
+#if defined(CONFIG_HDMI_TX_STRENGTH) && !defined(CONFIG_USER_ALLOC_TVOUT)
+#include <plat/tvout.h>
 #endif
 
 #include "s5p_tvout_common_lib.h"
@@ -64,7 +69,7 @@ int tvout_dbg_flag;
 
 
 #ifdef CONFIG_HDMI_EARJACK_MUTE
-int hdmi_audio_ext;
+bool hdmi_audio_ext;
 
 /* To provide an interface fo Audio path control */
 static ssize_t hdmi_set_audio_read(struct device *dev,
@@ -80,16 +85,18 @@ static ssize_t hdmi_set_audio_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t size)
 {
 	char *after;
-	unsigned long value = !strncmp(buf, "1", 1) ? true : false;
+	bool value = !strncmp(buf, "1", 1) ? true : false;
 
-	printk(KERN_ERR "[HDMI] Change AUDIO PATH: %ld\n", value);
+	printk(KERN_ERR "[HDMI] Change AUDIO PATH: %d\n", (int)value);
 
-	if (value) {
-		s5p_hdmi_ctrl_set_audio(1);
-		hdmi_audio_ext = 0;
-	} else {
-		s5p_hdmi_ctrl_set_audio(0);
-		hdmi_audio_ext = 1;
+	if (value == hdmi_audio_ext) {
+		if (value) {
+			hdmi_audio_ext = 0;
+			s5p_hdmi_ctrl_set_audio(1);
+		} else {
+			hdmi_audio_ext = 1;
+			s5p_hdmi_ctrl_set_audio(0);
+		}
 	}
 
 	return size;
@@ -272,16 +279,115 @@ static CLASS_ATTR(dbg_msg, S_IRUGO | S_IWUSR,
 		sysfs_dbg_msg_show, sysfs_dbg_msg_store);
 #endif
 
+#if !defined(CONFIG_CPU_EXYNOS4212) && !defined(CONFIG_CPU_EXYNOS4412)
+#if defined(CONFIG_USE_TVOUT_CMA)
+static inline int alloc_vp_buff(struct platform_device *pdev)
+{
+	/* in this case, buff will be allocated later
+	   when HDMI/MHL cable is connected */
+	return 1;
+}
+#elif defined(CONFIG_S5P_MEM_CMA)
+static inline int alloc_vp_buff(struct platform_device *pdev)
+{
+	int i, ret;
+	struct cma_info mem_info;
+	unsigned int vp_buff_vir_addr;
+	unsigned int vp_buff_phy_addr;
+
+	ret = cma_info(&mem_info, &pdev->dev, 0);
+	tvout_dbg("[cma_info] start_addr : 0x%x, end_addr : 0x%x, "
+		  "total_size : 0x%x, free_size : 0x%x\n",
+		  mem_info.lower_bound, mem_info.upper_bound,
+		  mem_info.total_size, mem_info.free_size);
+	if (ret) {
+		tvout_err("get cma info failed\n");
+		return 0;
+	}
+	s5ptv_vp_buff.size = mem_info.total_size;
+	if (s5ptv_vp_buff.size < S5PTV_VP_BUFF_CNT * S5PTV_VP_BUFF_SIZE) {
+		tvout_err("insufficient vp buffer size\n");
+		return 0;
+	}
+	vp_buff_phy_addr = (unsigned int)cma_alloc
+	    (&pdev->dev, (char *)"tvout", (size_t) s5ptv_vp_buff.size,
+	     (dma_addr_t) 0);
+
+	tvout_dbg("s5ptv_vp_buff.size = 0x%x\n", s5ptv_vp_buff.size);
+	tvout_dbg("s5ptv_vp_buff phy_base = 0x%x\n", vp_buff_phy_addr);
+
+	vp_buff_vir_addr = (unsigned int)phys_to_virt(vp_buff_phy_addr);
+	tvout_dbg("s5ptv_vp_buff vir_base = 0x%x\n", vp_buff_vir_addr);
+
+	if (!vp_buff_vir_addr) {
+		tvout_err("phys_to_virt failed\n");
+		cma_free(vp_buff_phy_addr);
+		return 0;
+	}
+
+	for (i = 0; i < S5PTV_VP_BUFF_CNT; i++) {
+		s5ptv_vp_buff.vp_buffs[i].phy_base =
+		    vp_buff_phy_addr + (i * S5PTV_VP_BUFF_SIZE);
+		s5ptv_vp_buff.vp_buffs[i].vir_base =
+		    vp_buff_vir_addr + (i * S5PTV_VP_BUFF_SIZE);
+	}
+
+	return 1;
+}
+#elif defined(CONFIG_S5P_MEM_BOOTMEM)
+static inline int alloc_vp_buff(struct platform_device *pdev)
+{
+	int i;
+	int mdev_id;
+	unsigned int vp_buff_vir_addr;
+	unsigned int vp_buff_phy_addr;
+
+	mdev_id = S5P_MDEV_TVOUT;
+	/* alloc from bank1 as default */
+	vp_buff_phy_addr = s5p_get_media_memory_bank(mdev_id, 1);
+	s5ptv_vp_buff.size = s5p_get_media_memsize_bank(mdev_id, 1);
+	if (s5ptv_vp_buff.size < S5PTV_VP_BUFF_CNT * S5PTV_VP_BUFF_SIZE) {
+		tvout_err("insufficient vp buffer size\n");
+		return 0;
+	}
+
+	tvout_dbg("s5ptv_vp_buff.size = 0x%x\n", s5ptv_vp_buff.size);
+	tvout_dbg("s5ptv_vp_buff phy_base = 0x%x\n", vp_buff_phy_addr);
+
+	vp_buff_vir_addr = (unsigned int)phys_to_virt(vp_buff_phy_addr);
+	tvout_dbg("s5ptv_vp_buff vir_base = 0x%x\n", vp_buff_vir_addr);
+
+	if (!vp_buff_vir_addr) {
+		tvout_err("phys_to_virt failed\n");
+		return 0;
+	}
+
+	for (i = 0; i < S5PTV_VP_BUFF_CNT; i++) {
+		s5ptv_vp_buff.vp_buffs[i].phy_base =
+		    vp_buff_phy_addr + (i * S5PTV_VP_BUFF_SIZE);
+		s5ptv_vp_buff.vp_buffs[i].vir_base =
+		    vp_buff_vir_addr + (i * S5PTV_VP_BUFF_SIZE);
+	}
+
+	return 1;
+}
+#endif
+#else
+static inline int alloc_vp_buff(struct platform_device *pdev)
+{
+	int i;
+
+	for (i = 0; i < S5PTV_VP_BUFF_CNT; i++) {
+		s5ptv_vp_buff.vp_buffs[i].phy_base = 0;
+		s5ptv_vp_buff.vp_buffs[i].vir_base = 0;
+	}
+
+	return 1;
+}
+#endif
+
 static int __devinit s5p_tvout_probe(struct platform_device *pdev)
 {
-#if defined(CONFIG_S5P_MEM_CMA)
-	struct cma_info mem_info;
-	int ret;
-#elif defined(CONFIG_S5P_MEM_BOOTMEM)
-	int mdev_id;
-#endif
-	unsigned int vp_buff_vir_addr;
-	unsigned int vp_buff_phy_addr = 0;
 	int i;
 
 #ifdef CONFIG_HDMI_EARJACK_MUTE
@@ -289,9 +395,15 @@ static int __devinit s5p_tvout_probe(struct platform_device *pdev)
 	struct device *hdmi_audio_dev;
 #endif
 
+#if defined(CONFIG_HDMI_TX_STRENGTH) && !defined(CONFIG_USER_ALLOC_TVOUT)
+	struct s5p_platform_tvout *pdata;
+	u8 tx_ch;
+	u8 *tx_val;
+#endif
+
 #ifdef CONFIG_TVOUT_DEBUG
 	struct class *sec_tvout;
-	tvout_dbg_flag = 0;
+	tvout_dbg_flag = 1 << DBG_FLAG_HPD;
 #endif
 	s5p_tvout_pm_runtime_enable(&pdev->dev);
 
@@ -303,7 +415,7 @@ static int __devinit s5p_tvout_probe(struct platform_device *pdev)
 		goto err;
 #elif defined(CONFIG_S5P_SYSMMU_TV) && defined(CONFIG_S5P_VMEM)
 	s5p_sysmmu_enable(&pdev->dev);
-	printk("sysmmu on\n");
+	printk(KERN_WARNING "sysmmu on\n");
 	s5p_sysmmu_set_tablebase_pgd(&pdev->dev, __pa(swapper_pg_dir));
 #endif
 	if (s5p_tvout_clk_get(pdev, &s5ptv_status) < 0)
@@ -315,13 +427,13 @@ static int __devinit s5p_tvout_probe(struct platform_device *pdev)
 	/* s5p_mixer_ctrl_constructor must be called
 	   before s5p_tvif_ctrl_constructor */
 	if (s5p_mixer_ctrl_constructor(pdev) < 0)
-		goto err;
+		goto err_mixer;
 
 	if (s5p_tvif_ctrl_constructor(pdev) < 0)
-		goto err;
+		goto err_tvif;
 
 	if (s5p_tvout_v4l2_constructor(pdev) < 0)
-		goto err;
+		goto err_v4l2;
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	spin_lock_init(&s5ptv_status.tvout_lock);
@@ -336,73 +448,30 @@ static int __devinit s5p_tvout_probe(struct platform_device *pdev)
 #ifndef CONFIG_USER_ALLOC_TVOUT
 	s5p_hdmi_phy_power(true);
 	if (s5p_tvif_ctrl_start(TVOUT_720P_60, TVOUT_HDMI) < 0)
-		goto err;
+		goto err_tvif_start;
+#ifdef CONFIG_HDMI_TX_STRENGTH
+	pdata = to_tvout_plat(&pdev->dev);
+	if (pdata && pdata->tx_tune) {
+		tx_ch = pdata->tx_tune->tx_ch;
+		tx_val = pdata->tx_tune->tx_val;
+	}
+	if (tx_ch && tx_val)
+		s5p_hdmi_phy_set_tx_strength(tx_ch, tx_val);
+#endif
 #endif
 
 	/* prepare memory */
 	if (s5p_tvout_fb_alloc_framebuffer(&pdev->dev))
-		goto err;
+		goto err_tvif_start;
 
 	if (s5p_tvout_fb_register_framebuffer(&pdev->dev))
-		goto err;
+		goto err_tvif_start;
 #endif
 	on_stop_process = false;
 	on_start_process = false;
-#if !defined(CONFIG_CPU_EXYNOS4212) && !defined(CONFIG_CPU_EXYNOS4412)
-#if defined(CONFIG_S5P_MEM_CMA)
-	/* CMA */
-	ret = cma_info(&mem_info, &pdev->dev, 0);
-	tvout_dbg("[cma_info] start_addr : 0x%x, end_addr : 0x%x, "
-		  "total_size : 0x%x, free_size : 0x%x\n",
-		  mem_info.lower_bound, mem_info.upper_bound,
-		  mem_info.total_size, mem_info.free_size);
-	if (ret) {
-		tvout_err("get cma info failed\n");
-		goto err;
-	}
-	s5ptv_vp_buff.size = mem_info.total_size;
-	if (s5ptv_vp_buff.size < S5PTV_VP_BUFF_CNT * S5PTV_VP_BUFF_SIZE) {
-		tvout_err("insufficient vp buffer size\n");
-		goto err;
-	}
-	vp_buff_phy_addr = (unsigned int)cma_alloc
-	    (&pdev->dev, (char *)"tvout", (size_t) s5ptv_vp_buff.size,
-	     (dma_addr_t) 0);
 
-#elif defined(CONFIG_S5P_MEM_BOOTMEM)
-	mdev_id = S5P_MDEV_TVOUT;
-	/* alloc from bank1 as default */
-	vp_buff_phy_addr = s5p_get_media_memory_bank(mdev_id, 1);
-	s5ptv_vp_buff.size = s5p_get_media_memsize_bank(mdev_id, 1);
-	if (s5ptv_vp_buff.size < S5PTV_VP_BUFF_CNT * S5PTV_VP_BUFF_SIZE) {
-		tvout_err("insufficient vp buffer size\n");
-		goto err;
-	}
-#endif
-
-	tvout_dbg("s5ptv_vp_buff.size = 0x%x\n", s5ptv_vp_buff.size);
-	tvout_dbg("s5ptv_vp_buff phy_base = 0x%x\n", vp_buff_phy_addr);
-
-	vp_buff_vir_addr = (unsigned int)phys_to_virt(vp_buff_phy_addr);
-	tvout_dbg("s5ptv_vp_buff vir_base = 0x%x\n", vp_buff_vir_addr);
-
-	if (!vp_buff_vir_addr) {
-		tvout_err("phys_to_virt failed\n");
-		goto err_ioremap;
-	}
-
-	for (i = 0; i < S5PTV_VP_BUFF_CNT; i++) {
-		s5ptv_vp_buff.vp_buffs[i].phy_base =
-		    vp_buff_phy_addr + (i * S5PTV_VP_BUFF_SIZE);
-		s5ptv_vp_buff.vp_buffs[i].vir_base =
-		    vp_buff_vir_addr + (i * S5PTV_VP_BUFF_SIZE);
-	}
-#else
-	for (i = 0; i < S5PTV_VP_BUFF_CNT; i++) {
-		s5ptv_vp_buff.vp_buffs[i].phy_base = 0;
-		s5ptv_vp_buff.vp_buffs[i].vir_base = 0;
-	}
-#endif
+	if (!alloc_vp_buff(pdev))
+		goto err_tvif_start;
 
 	for (i = 0; i < S5PTV_VP_BUFF_CNT - 1; i++)
 		s5ptv_vp_buff.copy_buff_idxs[i] = i;
@@ -439,6 +508,8 @@ static int __devinit s5p_tvout_probe(struct platform_device *pdev)
 		&dev_attr_hdmi_audio_set_ext) < 0)
 		printk(KERN_ERR "Failed to create device file(%s)!\n",
 			dev_attr_hdmi_audio_set_ext.attr.name);
+
+	hdmi_audio_ext = false;
 #endif
 
 	return 0;
@@ -446,10 +517,14 @@ static int __devinit s5p_tvout_probe(struct platform_device *pdev)
 err_sysfs:
 	class_destroy(sec_tvout);
 err_class:
-err_ioremap:
-#if defined(CONFIG_S5P_MEM_CMA)
-	cma_free(vp_buff_phy_addr);
-#endif
+err_tvif_start:
+	s5p_tvout_v4l2_destructor();
+err_v4l2:
+	s5p_tvif_ctrl_destructor();
+err_tvif:
+	s5p_mixer_ctrl_destructor();
+err_mixer:
+	s5p_vp_ctrl_destructor();
 err:
 	return -ENODEV;
 }
@@ -483,13 +558,19 @@ static int s5p_tvout_remove(struct platform_device *pdev)
 static void s5p_tvout_early_suspend(struct early_suspend *h)
 {
 	tvout_dbg("\n");
+#ifdef CLOCK_GATING_ON_EARLY_SUSPEND
 	mutex_lock(&s5p_tvout_mutex);
+	/* disable vsync interrupt during early suspend */
+	s5p_mixer_ctrl_disable_vsync_interrupt();
 	s5p_vp_ctrl_suspend();
 	s5p_mixer_ctrl_suspend();
 	s5p_tvif_ctrl_suspend();
 	suspend_status = 1;
 	tvout_dbg("suspend_status is true\n");
 	mutex_unlock(&s5p_tvout_mutex);
+#else
+	suspend_status = 1;
+#endif
 
 	return;
 }
@@ -498,6 +579,7 @@ static void s5p_tvout_late_resume(struct early_suspend *h)
 {
 	tvout_dbg("\n");
 
+#ifdef CLOCK_GATING_ON_EARLY_SUSPEND
 	mutex_lock(&s5p_tvout_mutex);
 
 #if defined(CONFIG_CPU_EXYNOS4212) || defined(CONFIG_CPU_EXYNOS4412)
@@ -508,10 +590,17 @@ static void s5p_tvout_late_resume(struct early_suspend *h)
 #endif
 	suspend_status = 0;
 	tvout_dbg("suspend_status is false\n");
+
 	s5p_tvif_ctrl_resume();
 	s5p_mixer_ctrl_resume();
 	s5p_vp_ctrl_resume();
+	/* restore vsync interrupt setting */
+	s5p_mixer_ctrl_set_vsync_interrupt(
+		s5p_mixer_ctrl_get_vsync_interrupt());
 	mutex_unlock(&s5p_tvout_mutex);
+#else
+	suspend_status = 0;
+#endif
 
 	return;
 }
@@ -548,8 +637,10 @@ static int s5p_tvout_suspend(struct device *dev)
 static int s5p_tvout_resume(struct device *dev)
 {
 	tvout_dbg("\n");
+#if defined(CLOCK_GATING_ON_EARLY_SUSPEND)
 #if defined(CONFIG_CPU_EXYNOS4212) || defined(CONFIG_CPU_EXYNOS4412)
 	flag_after_resume = true;
+#endif
 #else
 	queue_work_on(0, tvout_resume_wq, &tvout_resume_work);
 #endif

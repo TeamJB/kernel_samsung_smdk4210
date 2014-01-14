@@ -32,7 +32,7 @@
 #include <linux/mfd/max77686.h>
 #include <linux/mfd/max77686-private.h>
 
-#define PMIC_DEBUG KERN_INFO
+#define PMIC_DEBUG KERN_DEBUG
 #define PMIC_REG_DEBUG KERN_DEBUG
 
 #define MAX77686_OPMODE_SHIFT 6
@@ -188,11 +188,23 @@ unsigned int max77686_opmode_reg[][3] = {
 	/* LDO1 ... LDO26 */
 	/* {NORMAL, LP, STANDBY} */
 	{0x3, 0x2, 0x0}, /* LDO1 */
+#ifdef CONFIG_SAMSUNG_C2C
+	{0x3, 0x3, 0x3}, /* VDDQ_M1/2 */
+#else
 	{0x3, 0x2, 0x1},
+#endif
+#ifdef CONFIG_SAMSUNG_C2C
+	{0x3, 0x3, 0x3}, /* VCC_1.8_AP */
+#else
+	{0x3, 0x2, 0x0},
+#endif
 	{0x3, 0x2, 0x0},
 	{0x3, 0x2, 0x0},
-	{0x3, 0x2, 0x0},
+#ifdef CONFIG_SAMSUNG_C2C
+	{0x3, 0x3, 0x3}, /* VMPLL_1.0_AP*/
+#else
 	{0x3, 0x2, 0x1},
+#endif
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x0},
@@ -214,11 +226,19 @@ unsigned int max77686_opmode_reg[][3] = {
 	{0x3, 0x2, 0x0},
 	{0x3, 0x2, 0x0},
 	/* BUCK1 ... BUCK9 */
+#ifdef CONFIG_SAMSUNG_C2C
+	{0x3, 0x3, 0x3}, /* BUCK1 */
+#else
 	{0x3, 0x0, 0x1}, /* BUCK1 */
+#endif
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
 	{0x3, 0x2, 0x1},
+#ifdef CONFIG_SAMSUNG_C2C
+	{0x3, 0x3, 0x3}, /* VMEM 1.2V */
+#else
 	{0x3, 0x0, 0x0},
+#endif
 	{0x3, 0x0, 0x0},
 	{0x3, 0x0, 0x0},
 	{0x3, 0x0, 0x0},
@@ -240,7 +260,7 @@ static int max77686_get_enable_register(struct regulator_dev *rdev,
 		return -EINVAL;
 
 	mode = max77686->opmode_data[rid].mode;
-	printk(PMIC_REG_DEBUG "%s: rid=%d, mode=%d, size=%d\n",
+	pr_debug("%s: rid=%d, mode=%d, size=%d\n",
 		__func__, rid, mode, ARRAY_SIZE(max77686_opmode_reg));
 
 	if (max77686_opmode_reg[rid][mode] == 0x0)
@@ -299,7 +319,7 @@ static int max77686_reg_is_enabled(struct regulator_dev *rdev)
 	if (ret)
 		return ret;
 
-	printk(PMIC_REG_DEBUG "%s: id=%d, ret=%d, val=%x, mask=%x, pattern=%x\n",
+	pr_debug("%s: id=%d, ret=%d, val=%x, mask=%x, pattern=%x\n",
 		__func__, rdev_get_id(rdev), (val & mask) == pattern,
 		val, mask, pattern);
 
@@ -316,8 +336,8 @@ static int max77686_reg_enable(struct regulator_dev *rdev)
 	if (ret)
 		return ret;
 
-	printk(PMIC_DEBUG "%s: id=%d, reg=%x, mask=%x, pattern=%x\n",
-		__func__, rdev_get_id(rdev), reg, mask, pattern);
+	printk(PMIC_DEBUG "%s: id=%d, pattern=%x\n",
+		__func__, rdev_get_id(rdev), pattern);
 
 	return max77686_update_reg(i2c, reg, pattern, mask);
 }
@@ -332,8 +352,8 @@ static int max77686_reg_disable(struct regulator_dev *rdev)
 	if (ret)
 		return ret;
 
-	printk(PMIC_DEBUG "%s: id=%d, reg=%x, mask=%x, pattern=%x\n",
-		__func__, rdev_get_id(rdev), reg, mask, pattern);
+	printk(PMIC_DEBUG "%s: id=%d, pattern=%x\n",
+		__func__, rdev_get_id(rdev), pattern);
 
 	return max77686_update_reg(i2c, reg, ~mask, mask);
 }
@@ -352,15 +372,15 @@ static int max77686_get_voltage_register(struct regulator_dev *rdev,
 		reg = MAX77686_REG_BUCK1OUT;
 		break;
 	case MAX77686_BUCK2:
-		reg = MAX77686_REG_BUCK2DVS1;
+		reg = MAX77686_REG_BUCK2DVS2;
 		mask = 0xff;
 		break;
 	case MAX77686_BUCK3:
-		reg = MAX77686_REG_BUCK3DVS1;
+		reg = MAX77686_REG_BUCK3DVS2;
 		mask = 0xff;
 		break;
 	case MAX77686_BUCK4:
-		reg = MAX77686_REG_BUCK4DVS1;
+		reg = MAX77686_REG_BUCK4DVS2;
 		mask = 0xff;
 		break;
 	case MAX77686_BUCK5 ... MAX77686_BUCK9:
@@ -401,8 +421,8 @@ static int max77686_get_voltage(struct regulator_dev *rdev)
 	val >>= shift;
 	val &= mask;
 
-	printk(PMIC_REG_DEBUG "%s: id=%d, reg=%x, mask=%x, val=%x\n",
-		__func__, rid, reg, mask, val);
+	printk(PMIC_REG_DEBUG "%s: id=%d, val=%x\n",
+		__func__, rid, val);
 
 	return max77686_list_voltage(rdev, val);
 }
@@ -466,6 +486,22 @@ static int max77686_set_voltage(struct regulator_dev *rdev,
 	max77686_read_reg(i2c, reg, &org);
 	org = (org & mask) >> shift;
 
+#if defined(CONFIG_MACH_M0) || defined(CONFIG_MACH_C1) || \
+	defined(CONFIG_MACH_M3) || \
+	defined(CONFIG_MACH_P4NOTE) || \
+	defined(CONFIG_MACH_GC1) || defined(CONFIG_MACH_T0) || \
+	defined(CONFIG_MACH_GRANDE) || defined(CONFIG_MACH_IRON)
+#if !defined(CONFIG_MACH_T0_CHN_CU_DUOS) || \
+	!defined(CONFIG_MACH_T0_CHN_CMCC) || \
+	!defined(CONFIG_MACH_T0_CHN_OPEN_DUOS) || \
+	!defined(CONFIG_MACH_T0_CHN_CTC)
+	/* Test code for HDMI debug */
+	if (!gpio_get_value(GPIO_HDMI_EN))
+#endif
+#endif
+		printk(PMIC_REG_DEBUG "max77686: id=%d, org=%x, val=%x",
+			rdev_get_id(rdev), org, i);
+
 	ret = max77686_update_reg(i2c, reg, i << shift, mask << shift);
 	*selector = i;
 
@@ -484,9 +520,6 @@ static int max77686_set_voltage(struct regulator_dev *rdev,
 	default:
 		break;
 	}
-
-	printk(PMIC_REG_DEBUG "%s: id=%d, reg=%x, mask=%x, org=%x, val=%x\n",
-		__func__, rdev_get_id(rdev), reg, mask, org, i);
 
 	return ret;
 }
@@ -643,7 +676,7 @@ static __devinit int max77686_pmic_probe(struct platform_device *pdev)
 	struct regulator_dev **rdev;
 	struct max77686_data *max77686;
 	struct i2c_client *i2c;
-	int i, ret, size;
+	int i, ret, size, err;
 	u8 data = 0;
 
 	printk(PMIC_DEBUG "%s\n", __func__);
@@ -691,26 +724,36 @@ static __devinit int max77686_pmic_probe(struct platform_device *pdev)
 
 		sprintf(buf, "MAX77686 DVS%d", i);
 
-		if (gpio_is_valid(pdata->buck234_gpio_dvs[i])) {
+		if (gpio_is_valid(pdata->buck234_gpio_dvs[i].gpio)) {
 			max77686->buck234_gpios_dvs[i] =
-				pdata->buck234_gpio_dvs[i];
-			gpio_request(pdata->buck234_gpio_dvs[i], buf);
-			gpio_direction_output(pdata->buck234_gpio_dvs[i], 0);
+				pdata->buck234_gpio_dvs[i].gpio;
+			err = gpio_request(
+				pdata->buck234_gpio_dvs[i].gpio, buf);
+			if (err)
+				pr_warn(
+				"failed to request MAX77686 DVS%d\n", i);
+			gpio_direction_output(pdata->buck234_gpio_dvs[i].gpio,
+				pdata->buck234_gpio_dvs[i].data);
 		} else {
 			dev_info(&pdev->dev, "GPIO %s ignored (%d)\n",
-				 buf, pdata->buck234_gpio_dvs[i]);
+				 buf, pdata->buck234_gpio_dvs[i].gpio);
 		}
 
 		sprintf(buf, "MAX77686 SELB%d", i);
 
 		if (gpio_is_valid(pdata->buck234_gpio_selb[i])) {
+			int data = (max77686->device_id <= MAX77686_DEVICE_PASS1) ? 1 : 0;
 			max77686->buck234_gpios_selb[i] =
 				pdata->buck234_gpio_selb[i];
-			gpio_request(pdata->buck234_gpio_selb[i], buf);
-			gpio_direction_output(pdata->buck234_gpio_selb[i], 0);
+			err = gpio_request(
+				pdata->buck234_gpio_selb[i], buf);
+			if (err)
+				pr_warn(
+				"failed to request MAX77686 SELB%d\n", i);
+			gpio_direction_output(pdata->buck234_gpio_selb[i], data);
 		} else {
 			dev_info(&pdev->dev, "GPIO %s ignored (%d)\n",
-				 buf, pdata->buck234_gpio_dvs[i]);
+				 buf, pdata->buck234_gpio_selb[i]);
 		}
 	}
 	max77686->buck234_gpioindex = 0;
@@ -848,7 +891,11 @@ static int __init max77686_pmic_init(void)
 
 	return platform_driver_register(&max77686_pmic_driver);
 }
+#ifdef CONFIG_FAST_RESUME
+beforeresume_initcall(max77686_pmic_init);
+#else
 subsys_initcall(max77686_pmic_init);
+#endif
 
 static void __exit max77686_pmic_cleanup(void)
 {

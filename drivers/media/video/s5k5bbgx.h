@@ -17,10 +17,13 @@
 
 #define S5K5BBGX_DRIVER_NAME	"S5K5BBGX"
 
-typedef enum {
+extern struct class *camera_class;
+extern int s5k5bbgx_power_reset(void);
+
+enum stream_cmd_t {
 	STREAM_STOP,
 	STREAM_START,
-} stream_cmd_t;
+};
 
 struct s5k5bbgx_framesize {
 	u32 width;
@@ -63,7 +66,7 @@ static inline struct s5k5bbgx_state *to_state(struct v4l2_subdev *sd)
 	return container_of(sd, struct s5k5bbgx_state, sd);
 }
 
-//#define CONFIG_CAM_DEBUG
+/*#define CONFIG_CAM_DEBUG*/
 #define cam_warn(fmt, ...)	\
 	do { \
 		printk(KERN_WARNING "%s: " fmt, __func__, ##__VA_ARGS__); \

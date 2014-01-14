@@ -32,10 +32,14 @@
 
 static int s5p_dp_init_dp(struct s5p_dp_device *dp)
 {
+	int reg;
 	s5p_dp_reset(dp);
 
 	/* SW defined function Normal operation */
 	s5p_dp_enable_sw_function(dp);
+	/* Set AUX TX register to 51 */
+	reg = 0x75;
+	writel(reg, dp->reg_base + S5P_DP_PLL_FILTER_CTL_1);
 
 	if (!soc_is_exynos5250())
 		s5p_dp_config_interrupt(dp);

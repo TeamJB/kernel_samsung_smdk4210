@@ -399,7 +399,7 @@ static void max17042_get_soc(struct i2c_client *client)
 			/*raw 1.6% ~ 97.6% */
 			soc = (soc > 100) ? ((soc - 60) * 100 / 9700) : 0;
 			/*raw 1.5% ~ 95% */
-			/*soc = (soc < 150) ? 0 : ((soc - 150) * 100 / 9350) + 1; */
+		/*soc = (soc < 150) ? 0 : ((soc - 150) * 100 / 9350) + 1; */
 		}
 #else
 		/* adjusted soc by adding 0.45 */
@@ -426,7 +426,8 @@ static void max17042_get_temperature(struct i2c_client *client)
 	s32 temper = 0;
 
 	if (chip->is_enable) {
-		if (max17042_read_reg(client, MAX17042_REG_TEMPERATURE, data) < 0)
+		if (max17042_read_reg(client,
+			MAX17042_REG_TEMPERATURE, data) < 0)
 			return;
 
 		/* data[] store 2's compliment format number */
@@ -516,7 +517,7 @@ static void max17042_work(struct work_struct *work)
 			dev_info(&chip->client->dev,
 				"fuel alert already activated (raw:%d)\n",
 				chip->raw_soc);
-	} else if (chip->raw_soc == chip->fuel_alert_soc) {
+	} else if (chip->raw_soc >= chip->fuel_alert_soc) {
 		if (chip->is_fuel_alerted) {
 			wake_unlock(&chip->fuel_alert_wake_lock);
 			chip->is_fuel_alerted = false;
@@ -632,7 +633,8 @@ static ssize_t sec_fg_store(struct device *dev,
 			union power_supply_propval value;
 
 			if (!psy) {
-				pr_err("%s: fail to get battery ps\n", __func__);
+				pr_err("%s: fail to get battery ps\n",
+					__func__);
 				return -ENODEV;
 			}
 

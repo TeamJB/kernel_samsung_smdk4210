@@ -42,6 +42,11 @@
 #define master_to_device(a)	(a->dsim_lcd_dev)
 #define dev_to_dsim(a)		platform_get_drvdata(to_platform_device(a))
 
+#ifdef CONFIG_SLP_DISP_DEBUG
+#define DSIM_MAX_REG	128
+#define DSIM_BASE_REG	0x11C80000
+#endif
+
 struct mipi_dsim_ddi {
 	int				bus_id;
 	struct list_head		list;
@@ -267,9 +272,6 @@ struct mipi_dsim_ddi
 				return dsim_ddi;
 			}
 		}
-
-		kfree(dsim_ddi);
-		list_del(&dsim_ddi->list);
 	}
 
 out:
@@ -360,6 +362,18 @@ struct mipi_dsim_ddi
 	return NULL;
 }
 
+static void s5p_mipi_dsi_set_pms(struct mipi_dsim_device *dsim, unsigned int p,
+		unsigned int m, unsigned int s, unsigned int freq_band)
+{
+	s5p_mipi_dsi_set_pll_pms(dsim, p, m, s);
+	s5p_mipi_dsi_pll_freq_band(dsim, freq_band);
+	s5p_mipi_dsi_pll_stable_time(dsim,
+			dsim->dsim_config->pll_stable_time);
+	dsim->dsim_config->p = p;
+	dsim->dsim_config->m = m;
+	dsim->dsim_config->s = s;
+}
+
 /* define MIPI-DSI Master operations. */
 static struct mipi_dsim_master_ops master_ops = {
 	.cmd_read			= s5p_mipi_dsi_rd_data,
@@ -368,6 +382,7 @@ static struct mipi_dsim_master_ops master_ops = {
 	.clear_dsim_frame_done		= s5p_mipi_dsi_clear_frame_done,
 	.set_early_blank_mode		= s5p_mipi_dsi_early_blank_mode,
 	.set_blank_mode			= s5p_mipi_dsi_blank_mode,
+	.set_pms			= s5p_mipi_dsi_set_pms,
 };
 
 static int s5p_mipi_dsi_notifier(unsigned int val, void *data)
@@ -465,6 +480,43 @@ static int s5p_mipi_dsi_power_on(struct mipi_dsim_device *dsim, bool enable)
 	return 0;
 }
 
+#ifdef CONFIG_SLP_DISP_DEBUG
+static int s5p_mipi_dsi_read_reg(struct mipi_dsim_device *dsim, char *buf)
+{
+	u32 cfg;
+	int i;
+	int pos = 0;
+
+	pos += sprintf(buf+pos, "0x%.8x | ", DSIM_BASE_REG);
+	for (i = 1; i < DSIM_MAX_REG + 1; i++) {
+		cfg = readl(dsim->reg_base + ((i-1) * sizeof(u32)));
+		pos += sprintf(buf+pos, "0x%.8x ", cfg);
+		if (i % 4 == 0)
+			pos += sprintf(buf+pos, "\n0x%.8x | ",
+				DSIM_BASE_REG + (i * sizeof(u32)));
+	}
+
+	return pos;
+}
+
+static ssize_t show_read_reg(struct device *dev, struct device_attribute *attr,
+			char *buf)
+{
+	struct mipi_dsim_device *dsim = dev_to_dsim(dev);
+
+	if (!dsim->reg_base) {
+		dev_err(dev, "failed to get current register.\n");
+		return -EINVAL;
+	}
+
+	return s5p_mipi_dsi_read_reg(dsim, buf);
+}
+
+static struct device_attribute device_attrs[] = {
+	__ATTR(read_reg, S_IRUGO, show_read_reg, NULL),
+};
+#endif
+
 static int s5p_mipi_dsi_probe(struct platform_device *pdev)
 {
 	struct resource *res;
@@ -474,6 +526,9 @@ static int s5p_mipi_dsi_probe(struct platform_device *pdev)
 	struct mipi_dsim_lcd_driver *client_drv;
 	struct mipi_dsim_ddi *dsim_ddi;
 	int ret = -EINVAL;
+#ifdef CONFIG_SLP_DISP_DEBUG
+	int i;
+#endif
 
 	dsim = kzalloc(sizeof(struct mipi_dsim_device), GFP_KERNEL);
 	if (!dsim) {
@@ -584,6 +639,18 @@ static int s5p_mipi_dsi_probe(struct platform_device *pdev)
 
 	client_drv = dsim_ddi->dsim_lcd_drv;
 
+#ifdef CONFIG_SLP_DISP_DEBUG
+	for (i = 0; i < ARRAY_SIZE(device_attrs); i++) {
+		ret = device_create_file(&(pdev->dev),
+					&device_attrs[i]);
+		if (ret)
+			break;
+	}
+
+	if (ret < 0)
+		dev_err(&pdev->dev, "failed to add sysfs entries\n");
+#endif
+
 	/* initialize mipi-dsi client(lcd panel). */
 	if (client_drv && client_drv->probe)
 		client_drv->probe(dsim_ddi->dsim_lcd_dev);
@@ -604,10 +671,16 @@ static int s5p_mipi_dsi_probe(struct platform_device *pdev)
 
 		s5p_mipi_dsi_init_interrupt(dsim);
 
+		if (client_drv && client_drv->check_mtp)
+			client_drv->check_mtp(dsim_ddi->dsim_lcd_dev);
+
 		/* set lcd panel sequence commands. */
 		if (client_drv && client_drv->set_sequence)
 			client_drv->set_sequence(dsim_ddi->dsim_lcd_dev);
 	} else {
+		/* TODO:
+		 * add check_mtp callback function
+		 * if mipi dsim is off on bootloader, it causes kernel panic */
 		pm_runtime_set_suspended(&pdev->dev);
 		dsim->suspended = true;
 	}
@@ -687,6 +760,7 @@ static int __devexit s5p_mipi_dsi_remove(struct platform_device *pdev)
 			if (dsim_lcd_drv->remove)
 				dsim_lcd_drv->remove(dsim_ddi->dsim_lcd_dev);
 
+			list_del(&dsim_ddi->list);
 			kfree(dsim_ddi);
 		}
 	}
@@ -744,6 +818,11 @@ static int s5p_mipi_dsi_runtime_resume(struct device *dev)
 static const struct dev_pm_ops s5p_mipi_dsi_pm_ops = {
 	.suspend		= s5p_mipi_dsi_suspend,
 	.resume			= s5p_mipi_dsi_resume,
+#ifdef CONFIG_HIBERNATION
+	.freeze		= s5p_mipi_dsi_suspend,
+	.thaw		= s5p_mipi_dsi_resume,
+	.restore		= s5p_mipi_dsi_resume,
+#endif
 	.runtime_suspend	= s5p_mipi_dsi_runtime_suspend,
 	.runtime_resume		= s5p_mipi_dsi_runtime_resume,
 };

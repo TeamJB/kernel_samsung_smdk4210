@@ -72,6 +72,7 @@ static struct kobj_attribute _name##_attr = {	\
 	.store	= _name##_store,		\
 }
 
+extern int noresume;
 /* Preferred image size in bytes (default 500 MB) */
 extern unsigned long image_size;
 /* Size of memory reserved for drivers (default SPARE_PAGES x PAGE_SIZE) */
@@ -250,6 +251,8 @@ static inline void suspend_thaw_processes(void)
 /* kernel/power/wakelock.c */
 extern struct workqueue_struct *suspend_work_queue;
 extern struct wake_lock main_wake_lock;
+extern struct workqueue_struct *sync_work_queue;
+extern struct wake_lock sync_wake_lock;
 extern suspend_state_t requested_suspend_state;
 #endif
 
@@ -274,8 +277,14 @@ struct pm_wd_data {
 	struct task_struct *tsk;
 	int timeout;
 };
+#ifdef CONFIG_PM_WATCHDOG_TIMEOUT
+void pm_wd_timeout(unsigned long data);
+void pm_wd_add_timer(struct timer_list *timer, struct pm_wd_data *data,
+			int timeout);
+void pm_wd_del_timer(struct timer_list *timer);
+#else
 static inline void pm_wd_timeout(unsigned long data) { }
 static inline void pm_wd_add_timer(struct timer_list *timer,
 				struct pm_wd_data *data, int timeout) { }
 static inline void pm_wd_del_timer(struct timer_list *timer) { }
-
+#endif

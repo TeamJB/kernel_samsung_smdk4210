@@ -118,6 +118,10 @@ struct finger_info {
 	u16 w;
 	int16_t component;
 };
+struct mxt224_callbacks {
+	void (*inform_charger)(struct mxt224_callbacks *, int mode);
+};
+
 struct mxt224_platform_data {
 	int max_finger_touches;
 	const u8 **config;
@@ -160,7 +164,7 @@ struct mxt224_platform_data {
 	u8 nexttchdi_e;
 	void (*power_on) (void);
 	void (*power_off) (void);
-	void (*register_cb) (void *);
+	void (*register_cb)(struct mxt224_callbacks *);
 	void (*read_ta_status) (void *);
 };
 
@@ -228,6 +232,7 @@ struct mxt224_data {
 	uint16_t qt_delta_node[209];
 	int index_delta;
 	int index_reference;
+	struct mxt224_callbacks callbacks;
 };
 
 enum {

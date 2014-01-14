@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2004-2011 Atheros Communications Inc.
+ * Copyright (c) 2011-2012 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -27,7 +28,6 @@
 #include "target.h"
 #include "debug.h"
 #include "cfg80211.h"
-#include "dbglog.h"
 
 struct ath6kl_sdio {
 	struct sdio_func *func;
@@ -50,11 +50,13 @@ struct ath6kl_sdio {
 	/* scatter request list head */
 	struct list_head scat_req;
 
+	atomic_t irq_handling;
+	wait_queue_head_t irq_wq;
+
 	spinlock_t scat_lock;
 	bool scatter_enabled;
 
 	bool is_disabled;
-	atomic_t irq_handling;
 	const struct sdio_device_id *id;
 	struct work_struct wr_async_work;
 	struct list_head wr_asyncq;
@@ -66,6 +68,8 @@ struct ath6kl_sdio {
 #define CMD53_ARG_BLOCK_BASIS   1
 #define CMD53_ARG_FIXED_ADDRESS 0
 #define CMD53_ARG_INCR_ADDRESS  1
+
+extern wait_queue_head_t init_wq;
 
 static inline struct ath6kl_sdio *ath6kl_sdio_priv(struct ath6kl *ar)
 {
@@ -403,9 +407,11 @@ static int ath6kl_sdio_read_write_sync(struct ath6kl *ar, u32 addr, u8 *buf,
 			return -ENOMEM;
 		mutex_lock(&ar_sdio->dma_buffer_mutex);
 		tbuf = ar_sdio->dma_buffer;
-		bounced = true;
-		if ((request & HIF_WRITE) && bounced)
+
+		if (request & HIF_WRITE)
 			memcpy(tbuf, buf, len);
+
+		bounced = true;
 	} else
 		tbuf = buf;
 
@@ -463,7 +469,6 @@ static void ath6kl_sdio_irq_handler(struct sdio_func *func)
 
 	ar_sdio = sdio_get_drvdata(func);
 	atomic_set(&ar_sdio->irq_handling, 1);
-
 	/*
 	 * Release the host during interrups so we can pick it back up when
 	 * we process commands.
@@ -473,6 +478,8 @@ static void ath6kl_sdio_irq_handler(struct sdio_func *func)
 	status = ath6kl_hif_intr_bh_handler(ar_sdio->ar);
 	sdio_claim_host(ar_sdio->func);
 	atomic_set(&ar_sdio->irq_handling, 0);
+	wake_up(&ar_sdio->irq_wq);
+
 	WARN_ON(status && status != -ECANCELED);
 }
 
@@ -573,6 +580,13 @@ static void ath6kl_sdio_irq_enable(struct ath6kl *ar)
 	sdio_release_host(ar_sdio->func);
 }
 
+static bool ath6kl_sdio_is_on_irq(struct ath6kl *ar)
+{
+	struct ath6kl_sdio *ar_sdio = ath6kl_sdio_priv(ar);
+
+	return !atomic_read(&ar_sdio->irq_handling);
+}
+
 static void ath6kl_sdio_irq_disable(struct ath6kl *ar)
 {
 	struct ath6kl_sdio *ar_sdio = ath6kl_sdio_priv(ar);
@@ -580,10 +594,14 @@ static void ath6kl_sdio_irq_disable(struct ath6kl *ar)
 
 	sdio_claim_host(ar_sdio->func);
 
-	/* Mask our function IRQ */
-	while (atomic_read(&ar_sdio->irq_handling)) {
+	if (atomic_read(&ar_sdio->irq_handling)) {
 		sdio_release_host(ar_sdio->func);
-		schedule_timeout(HZ / 10);
+
+		ret = wait_event_interruptible(ar_sdio->irq_wq,
+				ath6kl_sdio_is_on_irq(ar));
+		if (ret)
+			return;
+
 		sdio_claim_host(ar_sdio->func);
 	}
 
@@ -605,6 +623,8 @@ static struct hif_scatter_req *ath6kl_sdio_scatter_req_get(struct ath6kl *ar)
 		node = list_first_entry(&ar_sdio->scat_req,
 					struct hif_scatter_req, list);
 		list_del(&node->list);
+
+		node->scat_q_depth = get_queue_depth(&ar_sdio->scat_req);
 	}
 
 	spin_unlock_bh(&ar_sdio->scat_lock);
@@ -783,102 +803,108 @@ out:
 	return ret;
 }
 
+static int ath6kl_set_sdio_pm_caps(struct ath6kl *ar)
+{
+	struct ath6kl_sdio *ar_sdio = ath6kl_sdio_priv(ar);
+	struct sdio_func *func = ar_sdio->func;
+	mmc_pm_flag_t flags;
+	int ret;
+
+	flags = sdio_get_host_pm_caps(func);
+
+	ath6kl_dbg(ATH6KL_DBG_SUSPEND, "sdio suspend pm_caps 0x%x\n", flags);
+#if 0
+	if (!(flags & MMC_PM_WAKE_SDIO_IRQ) ||
+	    !(flags & MMC_PM_KEEP_POWER))
+		return -EINVAL;
+#else
+	if (!(flags & MMC_PM_KEEP_POWER)){
+		printk("Q_M_D sdio suspend 1 pm_caps 0x%x\n", flags);
+		return -EINVAL;
+	}
+        printk("Q_M_D sdio suspend 2 pm_caps 0x%x\n", flags);
+#endif
+	ret = sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
+	if (ret) {
+		ath6kl_err("set sdio keep pwr flag failed: %d\n", ret);
+		return ret;
+	}
+#if 0
+	/* sdio irq wakes up host */
+	ret = sdio_set_host_pm_flags(func, MMC_PM_WAKE_SDIO_IRQ);
+	if (ret)
+		ath6kl_err("set sdio wake irq flag failed: %d\n", ret);
+#endif
+	return ret;
+}
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34))
 static int ath6kl_sdio_suspend(struct ath6kl *ar, struct cfg80211_wowlan *wow)
 {
 	struct ath6kl_sdio *ar_sdio = ath6kl_sdio_priv(ar);
 	struct sdio_func *func = ar_sdio->func;
 	mmc_pm_flag_t flags;
-	unsigned char pmode_to_try;
-	int ret = -EINVAL;
+	bool try_deepsleep = false;
+	int ret;
 
-	flags = sdio_get_host_pm_caps(func);
+	if (ar->suspend_mode == WLAN_POWER_STATE_WOW ||
+	    (!ar->suspend_mode && wow)) {
 
-	ath6kl_dbg(ATH6KL_DBG_SUSPEND, "sdio suspend pm_caps 0x%x\n", flags);
+		ret = ath6kl_set_sdio_pm_caps(ar);
+		if (ret)
+			goto cut_pwr;
 
-	/* Schedule scan uses WOW internally */
-	pmode_to_try = (ar->state == ATH6KL_STATE_SCHED_SCAN) ?
-			WLAN_POWER_STATE_WOW : ar->suspend_mode;
-retry:
-	switch (pmode_to_try) {
-	case WLAN_POWER_STATE_CUT_PWR:
-		ret = ath6kl_cfg80211_suspend(ar, ATH6KL_CFG_SUSPEND_CUTPOWER,
-					      NULL);
-		break;
+		ret = ath6kl_cfg80211_suspend(ar, ATH6KL_CFG_SUSPEND_WOW, wow);
+		if (ret && ret != -ENOTCONN)
+			ath6kl_err("wow suspend failed: %d\n", ret);
 
-	case WLAN_POWER_STATE_DEEP_SLEEP:
-#if 0 /* Px */
-		/* Try cut power if deep sleep suspend fails */
-		pmode_to_try = WLAN_POWER_STATE_CUT_PWR;
+		if (ret && (!ar->wow_suspend_mode ||
+		    ar->wow_suspend_mode == WLAN_POWER_STATE_DEEP_SLEEP))
+				try_deepsleep = true;
+		else if (ret &&
+			 ar->wow_suspend_mode == WLAN_POWER_STATE_CUT_PWR)
+				goto cut_pwr;
+		if (!ret)
+			return 0;
+	}
 
+	if (ar->suspend_mode == WLAN_POWER_STATE_DEEP_SLEEP ||
+	    !ar->suspend_mode || try_deepsleep) {
+
+		flags = sdio_get_host_pm_caps(func);
 		if (!(flags & MMC_PM_KEEP_POWER))
-			goto retry;
+			goto cut_pwr;
 
 		ret = sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
-		if (ret) {
-			ath6kl_warn("failed to set sdio keep power flag: %d\n",
-				     ret);
-			goto retry;
+		if (ret)
+			goto cut_pwr;
+
+		/*
+		 * Workaround to support Deep Sleep with MSM, set the host pm
+		 * flag as MMC_PM_WAKE_SDIO_IRQ to allow SDCC deiver to disable
+		 * the sdc2_clock and internally allows MSM to enter
+		 * TCXO shutdown properly.
+		 */
+		if ((flags & MMC_PM_WAKE_SDIO_IRQ)) {
+			ret = sdio_set_host_pm_flags(func,
+						MMC_PM_WAKE_SDIO_IRQ);
+			if (ret)
+				goto cut_pwr;
 		}
-#endif
+
 		ret = ath6kl_cfg80211_suspend(ar, ATH6KL_CFG_SUSPEND_DEEPSLEEP,
 					      NULL);
 		if (ret)
-			goto retry;
+			goto cut_pwr;
 
-		break;
-
-	case WLAN_POWER_STATE_WOW:
-#if 0 /* Px */
-		/* Try cut power if wow suspend fails */
-		pmode_to_try = WLAN_POWER_STATE_CUT_PWR;
-
-		if (!(flags & MMC_PM_KEEP_POWER) ||
-		    !(flags & MMC_PM_WAKE_SDIO_IRQ))
-			goto retry;
-
-		ret = sdio_set_host_pm_flags(func, MMC_PM_KEEP_POWER);
-		if (ret) {
-			ath6kl_warn("failed to set sdio keep power flag: %d\n",
-				     ret);
-			goto retry;
-		}
-
-		ret = sdio_set_host_pm_flags(func, MMC_PM_WAKE_SDIO_IRQ);
-		if (ret) {
-			ath6kl_warn("failed to set sdio wake irq flag: %d\n",
-				     ret);
-			goto retry;
-		}
-#endif
-		/*
-		 * The host sdio controller is capable of keep power and
-		 * sdio irq wake up at this point.
-		 */
-		if (ar->state == ATH6KL_STATE_SCHED_SCAN) {
-			ath6kl_dbg(ATH6KL_DBG_SUSPEND,
-				  "sched scan is in progress\n");
-			ret =  ath6kl_cfg80211_suspend(ar,
-						ATH6KL_CFG_SUSPEND_SCHED_SCAN,
-						NULL);
-			if (ret)
-				ath6kl_warn("schedule scan suspend failed: %d",
-					    ret);
-		} else
-			ret = ath6kl_cfg80211_suspend(ar,
-					ATH6KL_CFG_SUSPEND_WOW, wow);
-		if (ret)
-			goto retry;
-		break;
-
-	default:
-		/* We shouldn't be here. */
-		WARN_ON(1);
-		break;
+		return 0;
 	}
 
-	return ret;
+cut_pwr:
+	if (func->card && func->card->host)
+		func->card->host->pm_flags &= ~MMC_PM_KEEP_POWER;
 
+	return ath6kl_cfg80211_suspend(ar, ATH6KL_CFG_SUSPEND_CUTPOWER, NULL);
 }
 
 static int ath6kl_sdio_resume(struct ath6kl *ar)
@@ -901,7 +927,14 @@ static int ath6kl_sdio_resume(struct ath6kl *ar)
 
 	case ATH6KL_STATE_WOW:
 		break;
-	case ATH6KL_STATE_SCHED_SCAN:
+
+	case ATH6KL_STATE_SUSPENDING:
+		break;
+
+	case ATH6KL_STATE_RESUMING:
+		break;
+
+	case ATH6KL_STATE_RECOVERY:
 		break;
 	}
 
@@ -909,6 +942,7 @@ static int ath6kl_sdio_resume(struct ath6kl *ar)
 
 	return 0;
 }
+#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34)) */
 
 /* set the window address register (using 4-byte register access ). */
 static int ath6kl_set_addrwin_reg(struct ath6kl *ar, u32 reg_addr, u32 addr)
@@ -1167,7 +1201,6 @@ static int ath6kl_sdio_bmi_read(struct ath6kl *ar, u8 *buf, u32 len)
 
 	return 0;
 }
-#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34)) */
 
 static void ath6kl_sdio_stop(struct ath6kl *ar)
 {
@@ -1294,6 +1327,7 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	INIT_LIST_HEAD(&ar_sdio->wr_asyncq);
 
 	INIT_WORK(&ar_sdio->wr_async_work, ath6kl_sdio_write_async_work);
+	init_waitqueue_head(&ar_sdio->irq_wq);
 
 	for (count = 0; count < BUS_REQUEST_MAX_NUM; count++)
 		ath6kl_sdio_free_bus_req(ar_sdio, &ar_sdio->bus_req[count]);
@@ -1320,11 +1354,13 @@ static int ath6kl_sdio_probe(struct sdio_func *func,
 	}
 
 	ret = ath6kl_core_init(ar);
+	ath6kl_info("Current ath6kl driver version is: 3.4.0.41\n");
 	if (ret) {
 		ath6kl_err("Failed to init ath6kl core\n");
 		goto err_core_alloc;
 	}
 
+	ath6kl_notify_init_done();
 	return ret;
 
 err_core_alloc:
@@ -1379,30 +1415,26 @@ static struct sdio_driver ath6kl_sdio_driver = {
 static int __init ath6kl_sdio_init(void)
 {
 	int ret;
-#if 1 /* Px */
-    ath6kl_sdio_init_c210();
-#else
-	ath6kl_sdio_init_msm();
-#endif
+
+	ath6kl_sdio_init_platform();
+
+	init_waitqueue_head(&init_wq);
+
 	ret = sdio_register_driver(&ath6kl_sdio_driver);
-	if (ret)
+	if (ret) {
 		ath6kl_err("sdio driver registration failed: %d\n", ret);
-	else
-		ath6kl_dbglog_init();
+		return ret;
+	}
+
+	ret = ath6kl_wait_for_init_comp();
 
 	return ret;
 }
 
 static void __exit ath6kl_sdio_exit(void)
 {
-	ath6kl_dbglog_deinit();
 	sdio_unregister_driver(&ath6kl_sdio_driver);
-#if 1 /* Px */
-	ath6kl_sdio_exit_c210();
-#else
-	ath6kl_sdio_exit_msm();
-#endif
-
+	ath6kl_sdio_exit_platform();
 }
 
 module_init(ath6kl_sdio_init);

@@ -36,10 +36,13 @@ void flite_hw_set_cam_channel(struct flite_dev *dev)
 {
 	u32 cfg = readl(dev->regs + FLITE_REG_CIGENERAL);
 
+	cfg &= ~FLITE_REG_CIGENERAL0_MASK;
 	if (dev->id == 0)
-		cfg &= FLITE_REG_CIGENERAL_CAM_A;
+		cfg |= FLITE_REG_CIGENERAL0_CAM_A;
+	else if (dev->id == 1)
+		cfg |= FLITE_REG_CIGENERAL0_CAM_B;
 	else
-		cfg |= FLITE_REG_CIGENERAL_CAM_B;
+		cfg |= FLITE_REG_CIGENERAL0_CAM_C;
 
 	writel(cfg, dev->regs + FLITE_REG_CIGENERAL);
 }
@@ -57,7 +60,7 @@ void flite_hw_reset(struct flite_dev *dev)
 		if (cfg & FLITE_REG_CIGCTRL_SWRST_RDY)
 			break;
 		usleep_range(1000, 5000);
-	} while(time_before(jiffies, timeo));
+	} while (time_before(jiffies, timeo));
 
 	flite_dbg("wait time : %d ms",
 		jiffies_to_msecs(jiffies - timeo + FLITE_MAX_RESET_READY_TIME));
@@ -112,7 +115,7 @@ int flite_hw_set_source_format(struct flite_dev *dev)
 	if (f_fmt->is_yuv) {
 		cfg = readl(dev->regs + FLITE_REG_CISRCSIZE);
 
-		switch(f_fmt->code) {
+		switch (f_fmt->code) {
 		case V4L2_MBUS_FMT_YUYV8_2X8:
 			cfg |= FLITE_REG_CISRCSIZE_ORDER422_IN_YCBYCR;
 			break;
@@ -160,6 +163,32 @@ void flite_hw_set_output_dma(struct flite_dev *dev, bool enable)
 	writel(cfg, dev->regs + FLITE_REG_CIGCTRL);
 }
 
+void flite_hw_set_output_gscaler(struct flite_dev *dev, bool enable)
+{
+	u32 cfg = 0;
+	cfg = readl(dev->regs + FLITE_REG_CIGCTRL);
+
+	if (enable)
+		cfg &= ~FLITE_REG_CIGCTRL_OUT_GSCL_ENABLE;
+	else
+		cfg |= FLITE_REG_CIGCTRL_OUT_GSCL_ENABLE;
+
+	writel(cfg, dev->regs + FLITE_REG_CIGCTRL);
+}
+
+void flite_hw_set_output_isp(struct flite_dev *dev, bool enable)
+{
+	u32 cfg = 0;
+	cfg = readl(dev->regs + FLITE_REG_CIGCTRL);
+
+	if (enable)
+		cfg &= ~FLITE_REG_CIGCTRL_OUT_LOCAL_ENABLE;
+	else
+		cfg |= FLITE_REG_CIGCTRL_OUT_LOCAL_ENABLE;
+
+	writel(cfg, dev->regs + FLITE_REG_CIGCTRL);
+}
+
 void flite_hw_set_test_pattern_enable(struct flite_dev *dev)
 {
 	u32 cfg = 0;
@@ -169,8 +198,7 @@ void flite_hw_set_test_pattern_enable(struct flite_dev *dev)
 	writel(cfg, dev->regs + FLITE_REG_CIGCTRL);
 }
 
-void flite_hw_set_config_irq(struct flite_dev *dev, struct
-		s3c_platform_camera *cam)
+void flite_hw_set_config_irq(struct flite_dev *dev, struct s3c_platform_camera *cam)
 {
 	u32 cfg = 0;
 	cfg = readl(dev->regs + FLITE_REG_CIGCTRL);
@@ -196,8 +224,7 @@ void flite_hw_set_interrupt_source(struct flite_dev *dev, u32 source)
 	writel(cfg, dev->regs + FLITE_REG_CIGCTRL);
 }
 
-void flite_hw_set_camera_type(struct flite_dev *dev, struct
-		s3c_platform_camera *cam)
+void flite_hw_set_camera_type(struct flite_dev *dev, struct s3c_platform_camera *cam)
 {
 	u32 cfg = 0;
 	cfg = readl(dev->regs + FLITE_REG_CIGCTRL);
@@ -290,12 +317,60 @@ void flite_hw_set_dma_offset(struct flite_dev *dev)
 	writel(cfg, dev->regs + FLITE_REG_CIOOFF);
 }
 
+void flite_hw_set_framecnt_seq(struct flite_dev *dev, u32 index, u32 enable)
+{
+	u32 cfg = readl(dev->regs + FLITE_REG_CIFCNTSEQ);
+	u32 mask = (1 << index);
+
+	cfg &= (~mask);
+	cfg |= (enable << index);
+
+	writel(cfg, dev->regs + FLITE_REG_CIFCNTSEQ);
+}
+
+void flite_hw_set_framecnt_seq_masking(struct flite_dev *dev, u32 buf_cnt)
+{
+	u32 cfg = 0;
+	int mask = buf_cnt - 1;
+
+	do {
+		cfg |= (1 << mask);
+		mask--;
+	} while (mask >= 0);
+
+	writel(cfg, dev->regs + FLITE_REG_CIFCNTSEQ);
+}
+
+int flite_hw_get_framecnt_before(struct flite_dev *dev)
+{
+	u32 cfg = 0;
+
+	cfg = readl(dev->regs + FLITE_REG_CISTATUS3);
+	cfg &= FLITE_REG_CISTATUS3_FRAMECNT_BEFORE;
+
+	return cfg >> 7;
+}
+
+int flite_hw_get_framecnt_present(struct flite_dev *dev)
+{
+	u32 cfg = 0;
+
+	cfg = readl(dev->regs + FLITE_REG_CISTATUS3);
+	cfg &= FLITE_REG_CISTATUS3_FRAMECNT_BEFORE;
+
+	return cfg;
+}
+
 void flite_hw_set_output_addr(struct flite_dev *dev,
 			     struct flite_addr *addr, int index)
 {
-	flite_info("dst_buf[%d]: 0x%X", index, addr->y);
+	flite_dbg("dst_buf[%d]: 0x%X", index, addr->y);
 
-	writel(addr->y, dev->regs + FLITE_REG_CIOSA);
+	if (soc_is_exynos5250_rev1) {
+		writel(addr->y, dev->regs + FLITE_REG_CIOSA(index));
+	} else {
+		writel(addr->y, dev->regs + FLITE_REG_CIOSA(0));
+	}
 }
 
 void flite_hw_set_out_order(struct flite_dev *dev)
@@ -338,11 +413,11 @@ void flite_hw_set_output_size(struct flite_dev *dev)
 	writel(cfg, dev->regs + FLITE_REG_CIOCAN);
 }
 #else
-void flite_hw_set_inverse_polarity(struct flite_dev *dev){}
-void flite_hw_set_sensor_type(struct flite_dev *dev){}
-void flite_hw_set_dma_offset(struct flite_dev *dev){}
+void flite_hw_set_inverse_polarity(struct flite_dev *dev) {}
+void flite_hw_set_sensor_type(struct flite_dev *dev) {}
+void flite_hw_set_dma_offset(struct flite_dev *dev) {}
 void flite_hw_set_output_addr(struct flite_dev *dev,
-			struct flite_addr *addr, int index){}
-void flite_hw_set_out_order(struct flite_dev *dev){}
-void flite_hw_set_output_size(struct flite_dev *dev){}
+			struct flite_addr *addr, int index) {}
+void flite_hw_set_out_order(struct flite_dev *dev) {}
+void flite_hw_set_output_size(struct flite_dev *dev) {}
 #endif

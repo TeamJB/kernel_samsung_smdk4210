@@ -36,9 +36,11 @@
 #define DBG(f, x...) \
 	pr_debug(DRIVER_NAME " [%s()]: " f,  __func__, ## x)
 
+#ifndef CONFIG_FAST_RESUME
 #if defined(CONFIG_LEDS_CLASS) || (defined(CONFIG_LEDS_CLASS_MODULE) && \
 	defined(CONFIG_MMC_SDHCI_MODULE))
 #define SDHCI_USE_LEDS_CLASS
+#endif
 #endif
 
 #define MAX_TUNING_LOOP 40
@@ -49,7 +51,7 @@ static void sdhci_finish_data(struct sdhci_host *);
 
 static void sdhci_send_command(struct sdhci_host *, struct mmc_command *);
 static void sdhci_finish_command(struct sdhci_host *);
-static int sdhci_execute_tuning(struct mmc_host *mmc);
+static int sdhci_execute_tuning(struct mmc_host *mmc, u32 opcode);
 static void sdhci_tuning_timer(unsigned long data);
 
 #define MAX_BUS_CLK	(4)
@@ -643,9 +645,14 @@ static u8 sdhci_calc_timeout(struct sdhci_host *host, struct mmc_command *cmd)
 	/* timeout in us */
 	if (!data)
 		target_timeout = cmd->cmd_timeout_ms * 1000;
-	else
-		target_timeout = data->timeout_ns / 1000 +
-			data->timeout_clks / host->clock;
+	else {
+		/* patch added for divide by zero once issue. */
+		if (host && host->clock)
+			target_timeout = data->timeout_ns / 1000 +
+				data->timeout_clks / host->clock;
+		else
+			return 0;
+	}
 
 	if (host->quirks & SDHCI_QUIRK_DATA_TIMEOUT_USES_SDCLK)
 		host->timeout_clk = host->clock / 1000;
@@ -1280,7 +1287,7 @@ static void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		if ((host->flags & SDHCI_NEEDS_RETUNING) &&
 		    !(present_state & (SDHCI_DOING_WRITE | SDHCI_DOING_READ))) {
 			spin_unlock_irqrestore(&host->lock, flags);
-			sdhci_execute_tuning(mmc);
+			sdhci_execute_tuning(mmc, mrq->cmd->opcode);
 			spin_lock_irqsave(&host->lock, flags);
 
 			/* Restore original mmc_request structure */
@@ -1400,8 +1407,7 @@ static void sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		if ((ios->timing == MMC_TIMING_UHS_SDR50) ||
 		    (ios->timing == MMC_TIMING_UHS_SDR104) ||
 		    (ios->timing == MMC_TIMING_UHS_DDR50) ||
-		    (ios->timing == MMC_TIMING_UHS_SDR25) ||
-		    (ios->timing == MMC_TIMING_UHS_SDR12))
+		    (ios->timing == MMC_TIMING_UHS_SDR25))
 			ctrl |= SDHCI_CTRL_HISPD;
 
 		ctrl_2 = sdhci_readw(host, SDHCI_HOST_CONTROL2);
@@ -1661,7 +1667,7 @@ static int sdhci_start_signal_voltage_switch(struct mmc_host *mmc,
 		return 0;
 }
 
-static int sdhci_execute_tuning(struct mmc_host *mmc)
+static int sdhci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 {
 	struct sdhci_host *host;
 	u16 ctrl;
@@ -1719,7 +1725,7 @@ static int sdhci_execute_tuning(struct mmc_host *mmc)
 		if (!tuning_loop_counter && !timeout)
 			break;
 
-		cmd.opcode = MMC_SEND_TUNING_BLOCK;
+		cmd.opcode = opcode;
 		cmd.arg = 0;
 		cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
 		cmd.retries = 0;
@@ -1962,6 +1968,10 @@ static void sdhci_tasklet_finish(unsigned long param)
 		   controllers do not like that. */
 		sdhci_reset(host, SDHCI_RESET_CMD);
 		sdhci_reset(host, SDHCI_RESET_DATA);
+#ifdef CONFIG_MACH_PX
+		printk(KERN_DEBUG "%s: Controller is resetted!\n",
+			mmc_hostname(host->mmc));
+#endif
 	}
 
 	host->mrq = NULL;
@@ -2058,6 +2068,10 @@ static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask)
 
 	if (host->cmd->error) {
 		tasklet_schedule(&host->finish_tasklet);
+#ifdef CONFIG_MACH_PX
+		printk(KERN_DEBUG "%s: finish tasklet schedule\n",
+			mmc_hostname(host->mmc));
+#endif
 		return;
 	}
 
@@ -2311,9 +2325,8 @@ int sdhci_suspend_host(struct sdhci_host *host, pm_message_t state)
 	/* Disable tuning since we are suspending */
 	if (host->version >= SDHCI_SPEC_300 && host->tuning_count &&
 	    host->tuning_mode == SDHCI_TUNING_MODE_1) {
+		del_timer_sync(&host->tuning_timer);
 		host->flags &= ~SDHCI_NEEDS_RETUNING;
-		mod_timer(&host->tuning_timer, jiffies +
-			host->tuning_count * HZ);
 	}
 
 	if (host->mmc->pm_flags & MMC_PM_IGNORE_SUSPEND_RESUME) {
@@ -2343,6 +2356,29 @@ int sdhci_suspend_host(struct sdhci_host *host, pm_message_t state)
 
 EXPORT_SYMBOL_GPL(sdhci_suspend_host);
 
+void sdhci_shutdown_host(struct sdhci_host *host)
+{
+	u32 irqs = 0xFFFF;
+
+	/* all interrupt has to be masked */
+	sdhci_mask_irqs(host, irqs);
+
+	free_irq(host->irq, host);
+
+	if (host->vmmc) {
+		if (regulator_is_enabled(host->vmmc)) {
+#ifdef CONFIG_MIDAS_COMMON
+			if (host->ops->set_power)
+				host->ops->set_power(0);
+#endif
+			regulator_disable(host->vmmc);
+			pr_info("%s : MMC Card OFF\n", __func__);
+			mdelay(5);
+		}
+	}
+}
+EXPORT_SYMBOL_GPL(sdhci_shutdown_host);
+
 int sdhci_resume_host(struct sdhci_host *host)
 {
 	int ret;
@@ -2355,6 +2391,7 @@ int sdhci_resume_host(struct sdhci_host *host)
 		ret = regulator_enable(host->vmmc);
 		if (ret)
 			return ret;
+		pr_info("%s : MMC Card ON\n", __func__);
 	}
 
 
@@ -2655,6 +2692,9 @@ int sdhci_add_host(struct sdhci_host *host)
 		mmc->caps |= MMC_CAP_DRIVER_TYPE_C;
 	if (caps[1] & SDHCI_DRIVER_TYPE_D)
 		mmc->caps |= MMC_CAP_DRIVER_TYPE_D;
+
+	if (mmc->pm_flags & MMC_PM_IGNORE_SUSPEND_RESUME)
+		mmc->pm_caps |= MMC_PM_KEEP_POWER;
 
 	/*
 	 * If Power Off Notify capability is enabled by the host,

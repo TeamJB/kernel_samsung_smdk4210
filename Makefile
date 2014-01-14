@@ -1,6 +1,6 @@
 VERSION = 3
 PATCHLEVEL = 0
-SUBLEVEL = 15
+SUBLEVEL = 31
 EXTRAVERSION =
 NAME = Sneaky Weasel
 
@@ -646,16 +646,6 @@ KBUILD_ARFLAGS := $(call ar-option,D)
 # check for 'asm goto'
 ifeq ($(shell $(CONFIG_SHELL) $(srctree)/scripts/gcc-goto.sh $(CC)), y)
 	KBUILD_CFLAGS += -DCC_HAVE_ASM_GOTO
-endif
-
-ifeq ($(TARGET_BUILD_VARIANT),user)
-KBUILD_CFLAGS += -DTARGET_BUILD_USER
-else
-KBUILD_CFLAGS += -DTARGET_BUILD_ENG
-endif
-
-ifeq ($(SEC_PRODUCT_SHIP),true)
-KBUILD_CFLAGS += -DPRODUCT_SHIP
 endif
 
 # Add user supplied CPPFLAGS, AFLAGS and CFLAGS as the last assignments

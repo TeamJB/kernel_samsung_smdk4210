@@ -27,6 +27,8 @@
 #include <linux/battery/fuelgauge/max17042_fuelgauge.h>
 #elif defined(CONFIG_FUELGAUGE_MAX17048)
 #include <linux/battery/fuelgauge/max17048_fuelgauge.h>
+#elif defined(CONFIG_FUELGAUGE_MAX17050)
+#include <linux/battery/fuelgauge/max17050_fuelgauge.h>
 #endif
 
 struct sec_fuelgauge_reg_data {
@@ -41,6 +43,8 @@ static enum power_supply_property sec_fuelgauge_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_AVG,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_CURRENT_AVG,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_ENERGY_NOW,
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_TEMP,
 	POWER_SUPPLY_PROP_TEMP_AMBIENT,
@@ -65,9 +69,14 @@ struct sec_fuelgauge_info {
 	struct wake_lock fuel_alert_wake_lock;
 
 	unsigned int capacity_old;	/* only for atomic calculation */
+	unsigned int capacity_max;	/* only for dynamic calculation */
 
 	bool initial_update_of_soc;
 	struct mutex fg_lock;
+
+	/* register programming */
+	int reg_addr;
+	u8 reg_data[2];
 };
 
 bool sec_hal_fg_init(struct i2c_client *);
@@ -77,11 +86,45 @@ bool sec_hal_fg_fuelalert_init(struct i2c_client *, int);
 bool sec_hal_fg_is_fuelalerted(struct i2c_client *);
 bool sec_hal_fg_fuelalert_process(void *, bool);
 bool sec_hal_fg_full_charged(struct i2c_client *);
+bool sec_hal_fg_reset(struct i2c_client *);
 bool sec_hal_fg_get_property(struct i2c_client *,
 				enum power_supply_property,
 				union power_supply_propval *);
 bool sec_hal_fg_set_property(struct i2c_client *,
 				enum power_supply_property,
 				const union power_supply_propval *);
+
+ssize_t sec_hal_fg_show_attrs(struct device *dev,
+				const ptrdiff_t offset, char *buf);
+
+ssize_t sec_hal_fg_store_attrs(struct device *dev,
+				const ptrdiff_t offset,
+				const char *buf, size_t count);
+
+ssize_t sec_fg_show_attrs(struct device *dev,
+				struct device_attribute *attr, char *buf);
+
+ssize_t sec_fg_store_attrs(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count);
+
+#define SEC_FG_ATTR(_name)				\
+{							\
+	.attr = {.name = #_name, .mode = 0664},	\
+	.show = sec_fg_show_attrs,			\
+	.store = sec_fg_store_attrs,			\
+}
+
+static struct device_attribute sec_fg_attrs[] = {
+	SEC_FG_ATTR(reg),
+	SEC_FG_ATTR(data),
+	SEC_FG_ATTR(regs),
+};
+
+enum {
+	FG_REG = 0,
+	FG_DATA,
+	FG_REGS,
+};
 
 #endif /* __SEC_FUELGAUGE_H */

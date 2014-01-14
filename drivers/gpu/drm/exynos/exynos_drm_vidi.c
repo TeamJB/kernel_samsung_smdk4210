@@ -23,6 +23,7 @@
 
 #include "exynos_drm_drv.h"
 #include "exynos_drm_crtc.h"
+#include "exynos_drm_encoder.h"
 
 /* vidi has totally three virtual windows. */
 #define WINDOWS_NR		3
@@ -198,7 +199,7 @@ static void vidi_dpms(struct device *subdrv_dev, int mode)
 static void vidi_apply(struct device *subdrv_dev)
 {
 	struct vidi_context *ctx = get_vidi_context(subdrv_dev);
-	struct exynos_drm_manager *mgr = &ctx->subdrv.manager;
+	struct exynos_drm_manager *mgr = ctx->subdrv.manager;
 	struct exynos_drm_manager_ops *mgr_ops = mgr->ops;
 	struct exynos_drm_overlay_ops *ovl_ops = mgr->overlay_ops;
 	struct vidi_win_data *win_data;
@@ -297,8 +298,8 @@ static void vidi_win_mode_set(struct device *dev,
 	win_data->ovl_height = overlay->crtc_height;
 	win_data->fb_width = overlay->fb_width;
 	win_data->fb_height = overlay->fb_height;
-	win_data->dma_addr = overlay->dma_addrs[0] + offset;
-	win_data->vaddr = overlay->vaddrs[0] + offset;
+	win_data->dma_addr = overlay->dma_addr[0] + offset;
+	win_data->vaddr = overlay->vaddr[0] + offset;
 	win_data->bpp = overlay->bpp;
 	win_data->buf_offsize = (overlay->fb_width - overlay->crtc_width) *
 				(overlay->bpp >> 3);
@@ -373,6 +374,13 @@ static struct exynos_drm_overlay_ops vidi_overlay_ops = {
 	.disable = vidi_win_disable,
 };
 
+static struct exynos_drm_manager vidi_manager = {
+	.pipe		= -1,
+	.ops		= &vidi_manager_ops,
+	.overlay_ops	= &vidi_overlay_ops,
+	.display_ops	= &vidi_display_ops,
+};
+
 static void vidi_finish_pageflip(struct drm_device *drm_dev, int crtc)
 {
 	struct exynos_drm_private *dev_priv = drm_dev->dev_private;
@@ -401,7 +409,12 @@ static void vidi_finish_pageflip(struct drm_device *drm_dev, int crtc)
 	}
 
 	if (is_checked) {
-		drm_vblank_put(drm_dev, crtc);
+		/*
+		 * call drm_vblank_put only in case that drm_vblank_get was
+		 * called.
+		 */
+		if (atomic_read(&drm_dev->vblank_refcount[crtc]) > 0)
+			drm_vblank_put(drm_dev, crtc);
 
 		/*
 		 * don't off vblank if vblank_disable_allowed is 1,
@@ -419,7 +432,7 @@ static void vidi_fake_vblank_handler(struct work_struct *work)
 	struct vidi_context *ctx = container_of(work, struct vidi_context,
 					work);
 	struct exynos_drm_subdrv *subdrv = &ctx->subdrv;
-	struct exynos_drm_manager *manager = &subdrv->manager;
+	struct exynos_drm_manager *manager = subdrv->manager;
 
 	if (manager->pipe < 0)
 		return;
@@ -455,7 +468,7 @@ static int vidi_subdrv_probe(struct drm_device *drm_dev, struct device *dev)
 	return 0;
 }
 
-static void vidi_subdrv_remove(struct drm_device *drm_dev)
+static void vidi_subdrv_remove(struct drm_device *drm_dev, struct device *dev)
 {
 	DRM_DEBUG_KMS("%s\n", __FILE__);
 
@@ -465,7 +478,7 @@ static void vidi_subdrv_remove(struct drm_device *drm_dev)
 static int vidi_power_on(struct vidi_context *ctx, bool enable)
 {
 	struct exynos_drm_subdrv *subdrv = &ctx->subdrv;
-	struct device *dev = subdrv->manager.dev;
+	struct device *dev = subdrv->dev;
 
 	DRM_DEBUG_KMS("%s\n", __FILE__);
 
@@ -515,7 +528,7 @@ static int vidi_store_connection(struct device *dev,
 	if (ret)
 		return ret;
 
-	if (ctx->connected < 0 || ctx->connected > 1)
+	if (ctx->connected > 1)
 		return -EINVAL;
 
 	DRM_DEBUG_KMS("requested connection.\n");
@@ -527,6 +540,74 @@ static int vidi_store_connection(struct device *dev,
 
 static DEVICE_ATTR(connection, 0644, vidi_show_connection,
 			vidi_store_connection);
+
+int vidi_connection_ioctl(struct drm_device *drm_dev, void *data,
+				struct drm_file *file_priv)
+{
+	struct vidi_context *ctx = NULL;
+	struct drm_encoder *encoder;
+	struct exynos_drm_manager *manager;
+	struct exynos_drm_display_ops *display_ops;
+	struct drm_exynos_vidi_connection *vidi = data;
+	struct edid *raw_edid;
+	int edid_len;
+
+	DRM_DEBUG_KMS("%s\n", __FILE__);
+
+	if (!vidi) {
+		DRM_DEBUG_KMS("user data for vidi is null.\n");
+		return -EINVAL;
+	}
+
+	if (vidi->connection > 1) {
+		DRM_DEBUG_KMS("connection should be 0 or 1.\n");
+		return -EINVAL;
+	}
+
+	list_for_each_entry(encoder, &drm_dev->mode_config.encoder_list,
+								head) {
+		manager = exynos_drm_get_manager(encoder);
+		display_ops = manager->display_ops;
+
+		if (display_ops->type == EXYNOS_DISPLAY_TYPE_VIDI) {
+			ctx = get_vidi_context(manager->dev);
+			break;
+		}
+	}
+
+	if (!ctx) {
+		DRM_DEBUG_KMS("not found virtual device type encoder.\n");
+		return -EINVAL;
+	}
+
+	if (ctx->connected == vidi->connection) {
+		DRM_DEBUG_KMS("same connection request.\n");
+		return -EINVAL;
+	}
+
+	if (vidi->connection) {
+		if (!vidi->edid) {
+			DRM_DEBUG_KMS("edid data is null.\n");
+			return -EINVAL;
+		}
+		raw_edid = (struct edid *)vidi->edid;
+		edid_len = (1 + raw_edid->extensions) * EDID_LENGTH;
+		ctx->raw_edid = kzalloc(edid_len, GFP_KERNEL);
+		if (!ctx->raw_edid) {
+			DRM_DEBUG_KMS("failed to allocate raw_edid.\n");
+			return -ENOMEM;
+		}
+		memcpy(ctx->raw_edid, raw_edid, edid_len);
+	} else {
+		kfree(ctx->raw_edid);
+		ctx->raw_edid = NULL;
+	}
+
+	ctx->connected = vidi->connection;
+	drm_helper_hpd_irq_event(ctx->subdrv.drm_dev);
+
+	return 0;
+}
 
 static int __devinit vidi_probe(struct platform_device *pdev)
 {
@@ -549,13 +630,10 @@ static int __devinit vidi_probe(struct platform_device *pdev)
 	ctx->raw_edid = (struct edid *)fake_edid_info;
 
 	subdrv = &ctx->subdrv;
+	subdrv->dev = dev;
+	subdrv->manager = &vidi_manager;
 	subdrv->probe = vidi_subdrv_probe;
 	subdrv->remove = vidi_subdrv_remove;
-	subdrv->manager.pipe = -1;
-	subdrv->manager.ops = &vidi_manager_ops;
-	subdrv->manager.overlay_ops = &vidi_overlay_ops;
-	subdrv->manager.display_ops = &vidi_display_ops;
-	subdrv->manager.dev = dev;
 
 	mutex_init(&ctx->lock);
 
@@ -578,6 +656,7 @@ static int __devexit vidi_remove(struct platform_device *pdev)
 
 	exynos_drm_subdrv_unregister(&ctx->subdrv);
 
+	kfree(ctx->raw_edid);
 	kfree(ctx);
 
 	return 0;
@@ -603,7 +682,7 @@ static const struct dev_pm_ops vidi_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(vidi_suspend, vidi_resume)
 };
 
-static struct platform_driver vidi_driver = {
+struct platform_driver vidi_driver = {
 	.probe		= vidi_probe,
 	.remove		= __devexit_p(vidi_remove),
 	.driver		= {
@@ -612,20 +691,3 @@ static struct platform_driver vidi_driver = {
 		.pm	= &vidi_pm_ops,
 	},
 };
-
-static int __init vidi_init(void)
-{
-	return platform_driver_register(&vidi_driver);
-}
-
-static void __exit vidi_exit(void)
-{
-	platform_driver_unregister(&vidi_driver);
-}
-
-module_init(vidi_init);
-module_exit(vidi_exit);
-
-MODULE_AUTHOR("Inki Dae <inki.dae@samsung.com>");
-MODULE_DESCRIPTION("Samsung DRM Virtual Display Driver");
-MODULE_LICENSE("GPL");
